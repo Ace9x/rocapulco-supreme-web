@@ -39,3 +39,47 @@ test('turn instructions', () => {
   assert.equal(instruction({ name: 'Queens Blvd', maneuver: { type: 'turn', modifier: 'left' } }), 'Turn left onto Queens Blvd');
   assert.equal(instruction({ maneuver: { type: 'arrive' } }), 'Arrive at destination');
 });
+import { offerEconomics, capSurge, SURGE_CAP } from '../fare.js';
+import { homeFilterOk, rankByRoad, cancelStatus, noShowAllowed, scheduleState, smooth, FREE_CANCEL_MS, SCHED_LEAD_MS } from '../dispatch.js';
+test('breakdown lines sum exactly to total (no hidden fees)', () => {
+  for (const [m, s, sg] of [[100, 30, 1], [8000, 900, 1], [8000, 900, 1.4], [50000, 3000, 3]]) {
+    const f = estimateFare({ meters: m, seconds: s, surge: sg });
+    assert.equal(Math.round(f.lines.reduce((a, l) => a + l[1], 0) * 100) / 100, f.total);
+  }
+});
+test('surge is off by default and capped', () => {
+  assert.equal(estimateFare({ meters: 8000, seconds: 900 }).surge, 1);
+  assert.equal(capSurge(3), SURGE_CAP); assert.equal(capSurge(0.5), 1);
+  const a = estimateFare({ meters: 8000, seconds: 900 }).total, b = estimateFare({ meters: 8000, seconds: 900, surge: 9 }).total;
+  assert.ok(Math.abs(b - a * SURGE_CAP) < 0.02);
+});
+test('surge never applies to airport flat rates', () => assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK', surge: 1.5 }).total, 45));
+test('offer economics $/mi', () => { const e = offerEconomics({ fare: 20, tripMeters: 1609.344 * 4, pickupMeters: 1609.344 }); assert.equal(e.perTripMile, 5); assert.equal(e.perTotalMile, 4); });
+test('heading-home filter', () => {
+  const home = { lat: 40.60, lng: -73.75 }, driver = { lat: 40.70, lng: -73.80 };
+  assert.ok(homeFilterOk({ driver, home, dest: { lat: 40.62, lng: -73.76 } }));
+  assert.ok(!homeFilterOk({ driver, home, dest: { lat: 40.78, lng: -73.85 } }));
+  assert.ok(homeFilterOk({ driver, home: null, dest: { lat: 0, lng: 0 } }));
+});
+test('rank by road ETA beats straight line', () => {
+  const r = rankByRoad([{ id: 'a', dist: 300 }, { id: 'b', dist: 900 }, { id: 'c', dist: 100 }], [600, 120, null]);
+  assert.deepEqual(r.map(x => x.id), ['b', 'a', 'c']);
+});
+test('free-cancel window and late-driver exception', () => {
+  assert.ok(cancelStatus({ matchedAt: 0, now: 1000, promisedEtaSec: 300, currentEtaSec: 280 }).free);
+  assert.ok(!cancelStatus({ matchedAt: 0, now: FREE_CANCEL_MS + 1, promisedEtaSec: 600, currentEtaSec: 100 }).free);
+  assert.ok(cancelStatus({ matchedAt: 0, now: FREE_CANCEL_MS + 1, promisedEtaSec: 120, currentEtaSec: 600 }).late);
+});
+test('no-show allowed 5 min after promised arrival', () => {
+  assert.ok(!noShowAllowed({ matchedAt: 0, now: 400e3, promisedEtaSec: 300, arrived: false }));
+  assert.ok(noShowAllowed({ matchedAt: 0, now: 601e3, promisedEtaSec: 300, arrived: false }));
+  assert.ok(!noShowAllowed({ matchedAt: 0, now: 9e9, promisedEtaSec: 300, arrived: true }));
+});
+test('schedule states', () => {
+  const T = 10 * SCHED_LEAD_MS;
+  assert.equal(scheduleState({ pickupAt: T, now: T - SCHED_LEAD_MS - 1, matched: false }), 'waiting');
+  assert.equal(scheduleState({ pickupAt: T, now: T - SCHED_LEAD_MS + 1, matched: false }), 'dispatching');
+  assert.equal(scheduleState({ pickupAt: T, now: T - 1000, matched: true }), 'matched');
+  assert.equal(scheduleState({ pickupAt: T, now: T + 16 * 60e3, matched: false }), 'expired');
+});
+test('eta smoothing', () => { assert.equal(smooth(null, 100), 100); assert.ok(smooth(100, 200) > 100 && smooth(100, 200) < 200); });

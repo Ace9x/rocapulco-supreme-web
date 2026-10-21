@@ -21,5 +21,6 @@
   },
   "dependencies": {
     "mqtt": "^5.16.1"
-  }
+  },
+  "type": "module"
 }

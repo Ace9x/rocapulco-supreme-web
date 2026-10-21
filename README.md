@@ -15,13 +15,28 @@ A phone-first, installable (PWA) taxi app for NYC with **rider**, **driver** and
 
 **Demo mode** (rider, on by default) spawns 4 *clearly labeled* simulated drivers near you so anyone can watch a full trip. Turn it off to only match real drivers. Driver "Simulate GPS" moves the car along the route for indoor testing.
 
+## Round 2: competitor-driven upgrades (from Uber/Lyft/Curb review research)
+1. **Honest ETA**: no ETA promise until a real driver accepts. Then you get a smoothed road ETA and a visible **free-cancel countdown** (3 min, and always free if the driver runs more than 5 min late).
+2. **Upfront fare with an itemized breakdown** that sums to the total. No booking, service or cancellation fees. The upfront fare is locked and is exactly what the driver collects.
+3. **The driver sees everything before accepting**: pickup, drop-off, rider note, fare, **$/mile** for the trip and $/mile including the pickup leg (from the real road route).
+4. **Heading home**: only rides that end closer to home, with **no daily use limit**. Home stays on the driver's device.
+5. **No penalty for declining**: there is no acceptance rate at all.
+6. **Exact pickup**: drag the pickup pin and leave a note for the driver. **In-app chat** for each trip, plus call buttons (direct numbers; masking needs a telephony backend).
+7. **Scheduled rides**: driver search opens 30 min before pickup, with an alert to the rider then. If the driver cancels or goes silent for over 60 s, the ride is **automatically reassigned**, and the same applies to on-demand rides.
+8. **Busy-time pricing is off by default**, capped at ×1.5, and only turns on when the dispatcher enters a reason that riders see. It never applies to airport flat rates.
+9. **One tap for "Driver never showed"**: available 5 min after the promised arrival. The rider is charged $0, the report goes to the dispatcher, and the next driver is one tap away. Receipts have a "Report a problem" button.
+10. **Smooth animated car markers**; **battery-friendly GPS** (low-power while waiting, high accuracy only on trips, location sent only after moving 25 m or every 15 s); and **matching by road ETA** using the OSRM table service, not straight-line distance.
+
+## Backend / Supabase
+All app code goes through one interface in `data.js` (`publish(topic,msg)` / `subscribe(pattern,cb)`, topics `drivers/*`, `offer/*`, `trip/*`, `reports/*`, `config`). A `SupabaseBus` adapter using Supabase Realtime Broadcast is included. Fill in `SUPABASE.url/anonKey` in `data.js`, or open with `?transport=supabase&sb_url=…&sb_key=…`. The phone-OTP auth and Postgres write hooks are marked `TODO(auth)` / `TODO(db)`. This adapter has not been tested yet, because no Supabase project exists so far.
+
 ## Try it on two phones
 1. Phone A: open the link → **I'm a driver** → sign up → **Go online** (allow location).
 2. Phone B: **I need a ride** → turn **Demo mode off** → pick a destination → **Request ride**.
 Use the same `?ns=yourname` on both links for a private channel, e.g. `https://ace9x.github.io/rocapulco-supreme-web/?ns=fan`.
 
 ## Fares & payments
-Fares use the original Rocapulco Supreme model (`fare.js`, ported from `packages/shared/src/fare.ts`): $5.00 base + $2.50/mile + $0.40/minute, $8 minimum, flat $45 to JFK and $55 to LaGuardia, computed from the real road route. Tolls/tip extra. Upfront estimate, not a licensed meter. **The app takes no payments — riders pay the driver directly (cash/card reader).**
+Fares use the original Rocapulco Supreme model (`fare.js`, ported from `packages/shared/src/fare.ts`): $5.00 base + $2.50/mile + $0.40/minute, $8 minimum, flat $45 to JFK and $55 to LaGuardia, computed from the real road route. Tolls/tip extra. The upfront fare is locked at booking. It is not a licensed meter. **The app takes no payments — riders pay the driver directly (cash/card reader).**
 
 ## How it works
 Static site (GitHub Pages) + real-time messaging as signed *ephemeral* events (relayed live, never stored) over public **Nostr relays on port 443** (nos.lol, relay.primal.net, nostr.mom — sent to all three, de-duplicated). `?transport=mqtt` switches to public MQTT brokers; `?transport=local` uses BroadcastChannel (same browser, for tests). Maps: © OpenStreetMap contributors (Leaflet). Routing: OSRM demo server. Geocoding: Photon (Komoot). No accounts or API keys needed.
@@ -42,6 +57,7 @@ BASE=https://ace9x.github.io/rocapulco-supreme-web/ TRANSPORT=nostr npx playwrig
 
 ## Honest limitations
 - Public relays = anyone who knows the channel name can see messages on it (names, phone numbers, locations). Fine for demos/pilots; for real operations run a private relay/broker with auth (see `transport.js`, one URL to change).
+- Scheduled rides are stored on the rider's device and dispatched while the app is open (a browser can't wake itself up). For guaranteed dispatch, use the Supabase backend.
 - Accounts, history and earnings are stored on each device (localStorage), not in a cloud database.
 - OSRM/Photon/OSM tile servers are free community services with fair-use limits; heavy production traffic needs your own or paid providers. Routing has no live traffic.
 - Public relays can rate-limit or go down; the app uses three for redundancy and shows ● Live / reconnecting in the header.

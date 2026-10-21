@@ -1,6 +1,6 @@
-import { estimateFare, money } from './fare.js';
-import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction } from './dispatch.js';
-import { Bus } from './transport.js';
+import { estimateFare, money, capSurge, SURGE_CAP, offerEconomics } from './fare.js';
+import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction, rankByRoad, homeFilterOk, cancelStatus, noShowAllowed, scheduleState, smooth } from './dispatch.js';
+import { createBus } from './data.js';
 
 const Q = new URLSearchParams(location.search);
 const NS = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
@@ -12,9 +12,12 @@ const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('q
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtMin = (s) => Math.max(1, Math.round(s / 60)) + ' min';
 const fmtDist = (m) => m < 160 ? Math.round(m * 3.281 / 10) * 10 + ' ft' : (m / 1609.344).toFixed(1) + ' mi';
+const LEAD_MS = (+Q.get('leadmin') || 30) * 60e3;           // scheduled-ride dispatch lead (test override)
+const NOSHOW_GRACE = Q.get('testfast') ? 3 : 300;            // seconds after promised ETA before "driver never showed"
+const NOSHOW_SCALE = Q.get('testfast') ? 0 : 1;
 const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
-const bus = new Bus({ mode: ['local', 'mqtt'].includes(Q.get('transport')) ? Q.get('transport') : 'nostr', ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
+const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
@@ -73,6 +76,40 @@ function autocomplete(input, list, near, onPick) {
 }
 const speak = (t) => { if (store.get('voice', true) && 'speechSynthesis' in window) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } };
 
+
+// ---------- shared UI helpers ----------
+// Smoothly glide a marker to a new position (no jumping cars).
+function animateTo(marker, to, ms = 900) {
+  const from = marker.getLatLng(), t0 = performance.now(); cancelAnimationFrame(marker._raf);
+  if (from.distanceTo(to) > 3000) return marker.setLatLng(to);
+  const stepf = (t) => { const k = Math.min(1, (t - t0) / ms), e = k * (2 - k); marker.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (k < 1) marker._raf = requestAnimationFrame(stepf); };
+  marker._raf = requestAnimationFrame(stepf);
+}
+// Road travel time from each driver to the pickup via the OSRM table service (one request for all candidates).
+async function roadTimes(cands, pickup) {
+  try {
+    const pts = [pickup, ...cands].map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+    const src = cands.map((_, i) => i + 1).join(';');
+    const j = await (await fetch(`https://router.project-osrm.org/table/v1/driving/${pts}?sources=${src}&destinations=0`)).json();
+    if (j.code !== 'Ok') throw 0; return j.durations.map(r => r[0]);
+  } catch { return null; }
+}
+function notify(text) {
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.appendChild(t); setTimeout(() => t.remove(), 6000);
+  try { if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Rocapulco Supreme', { body: text, icon: 'icons/icon-192.png' }); } catch {}
+}
+// In-trip chat between rider and driver over the trip channel.
+function chatBox(box, btn, tripId, role) {
+  const msgs = []; let open = false;
+  const render = () => { if (!open) { btn.textContent = msgs.filter(m => m.from !== role).length ? `💬 Message (${msgs.filter(m => m.from !== role).length})` : '💬 Message'; return; }
+    box.innerHTML = `<div class="chat"><div class="msgs" id="msgs">${msgs.map(m => `<div class="msg ${m.from === role ? 'me' : ''}">${esc(m.text)}</div>`).join('') || '<p class="fine">Messages go only to this trip.</p>'}</div><form id="cf"><input id="ci" placeholder="Type a message" maxlength="200" autocomplete="off"><button class="btn sm">Send</button></form></div>`;
+    $('#cf').onsubmit = (e) => { e.preventDefault(); const v = $('#ci').value.trim(); if (!v) return; bus.publish('trip/' + tripId, { type: 'chat', from: role, text: v, id: uid() }); $('#ci').value = ''; };
+    const ms = $('#msgs'); ms.scrollTop = ms.scrollHeight; };
+  btn.onclick = () => { open = !open; if (!open) box.innerHTML = ''; render(); open && $('#ci')?.focus(); };
+  sub('trip/' + tripId, (m) => { if (m.type === 'chat') { msgs.push(m); if (m.from !== role) { navigator.vibrate?.(100); if (!open) notify('New message: ' + m.text); } render(); } });
+  render();
+}
+
 // ---------- simulated drivers (demo mode) ----------
 const NAMES = [['Marcus', 'Toyota Camry Hybrid', 'T7xx'], ['Priya', 'Honda Accord', 'T4xx'], ['Luis', 'Ford Escape', 'T9xx'], ['Danielle', 'Nissan Rogue', 'T2xx']];
 class SimDriver {
@@ -88,17 +125,18 @@ class SimDriver {
   async onOffer(trip) {
     if (this.status !== 'available') return bus.publish('trip/' + trip.id, { type: 'decline', driver: this.id });
     this.status = 'busy'; await wait(1500);
+    let replied = false; const un = bus.subscribe('trip/' + trip.id, (m) => { if (m.type === 'chat' && m.from === 'rider' && !replied) { replied = true; setTimeout(() => bus.publish('trip/' + trip.id, { type: 'chat', from: 'driver', text: 'Got it, see you soon! (demo driver)', id: uid() }), 1200); } if (m.type === 'cancel') this.cancelled = true; });
     bus.publish('trip/' + trip.id, { type: 'accept', driver: this.info() });
-    await this.drive(await route(this, trip.pickup), trip);
+    await this.drive(await route(this, trip.pickup), trip); if (this.cancelled) { un(); this.status = 'available'; this.cancelled = false; return; }
     bus.publish('trip/' + trip.id, { type: 'arrived', driver: this.id }); await wait(3000);
     bus.publish('trip/' + trip.id, { type: 'start', driver: this.id });
     const rt = await route(trip.pickup, trip.dest); await this.drive(rt, trip);
-    const f = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: trip.dest.label });
-    bus.publish('trip/' + trip.id, { type: 'complete', driver: this.id, fare: f.total, meters: rt.distance, seconds: rt.duration });
-    this.status = 'available';
+    const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked
+    bus.publish('trip/' + trip.id, { type: 'complete', driver: this.id, lines: f.lines, fare: f.total, meters: rt.distance, seconds: rt.duration });
+    this.status = 'available'; un();
   }
   async drive(rt, trip) {
-    for (let m = 0; m < rt.distance; m += 15 * SPEED) {
+    for (let m = 0; m < rt.distance && !this.cancelled; m += 15 * SPEED) {
       Object.assign(this, pointAlong(rt.coords, rt.cum, m));
       const p = progress(rt, this);
       bus.publish('trip/' + trip.id, { type: 'loc', lat: this.lat, lng: this.lng, eta: p.eta, remain: p.remain }, { localOnly: true });
@@ -137,34 +175,65 @@ function profileForm(role, done) {
 function rider() {
   profileForm('rider', (me) => {
     const drivers = new Map(), dmk = new Map();
-    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true);
-    let pinP, pinD, line, carMk;
+    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true), surgeCfg = { surge: 1, reason: '', ts: 0 };
+    let pinP, pinD, line, carMk, tick;
+    sub('config', (c) => { surgeCfg = c; if (!trip && pickup && dest && $('#est')) estimate(); });
+    const surgeNow = () => Date.now() - surgeCfg.ts < 30000 ? capSurge(surgeCfg.surge) : 1;
     sub('drivers/+', (d) => {
       if (d.sim && d.owner !== me.id) return;
       drivers.set(d.id, d);
       if (trip) return;
       if (d.status === 'offline') { dmk.get(d.id)?.remove(); dmk.delete(d.id); return; }
-      if (!dmk.has(d.id)) dmk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).addTo(layer)); else dmk.get(d.id).setLatLng([d.lat, d.lng]);
+      if (!dmk.has(d.id)) dmk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).addTo(layer)); else animateTo(dmk.get(d.id), [d.lat, d.lng]);
     });
-    cleanup.push(() => sims.forEach(s => s.stop()));
+    cleanup.push(() => { sims.forEach(s => s.stop()); clearInterval(tick); });
     const spawnSims = () => { if (demo && !sims.length && pickup) sims = [0, 1, 2, 3].map(i => new SimDriver(pickup, me.id, i)); };
     const stopSims = () => { sims.forEach(s => { s.stop(); dmk.get(s.id)?.remove(); dmk.delete(s.id); drivers.delete(s.id); }); sims = []; };
 
+    // scheduled rides: stored on this device; dispatch opens at T-30 min while the app is open
+    every(() => {
+      if (trip) return;
+      const list = store.get('scheduled', []); let changed = false;
+      for (const s of list) {
+        const st = scheduleState({ pickupAt: s.pickupAt, now: Date.now(), matched: false, lead: LEAD_MS });
+        if (st === 'dispatching' && !s.alerted) { s.alerted = true; changed = true; notify(`Scheduled ride at ${new Date(s.pickupAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}: finding your driver now`); pickup = s.pickup; dest = s.dest; rt = null; startRequest(s); break; }
+        if (st === 'expired') { s.expired = true; changed = true; notify('A scheduled ride could not be matched and was removed. No charge.'); }
+      }
+      if (changed) store.set('scheduled', list.filter(s => !s.expired && !s.started));
+    }, 5000);
+
     function plan() {
-      trip = null; dmk.forEach(m => m.addTo(layer));
-      sheet.innerHTML = `${tabs('rider')}<div class="hi">Hi ${esc(me.name.split(' ')[0])} 👋 <a href="#" id="hist">History</a></div>
+      trip = null; clearInterval(tick); dmk.forEach(m => m.addTo(layer));
+      const sched = store.get('scheduled', []);
+      sheet.innerHTML = `${tabs('rider')}<div class="hi">Hi ${esc(me.name.split(' ')[0])} 👋 <span><a href="#" id="hist">History</a></span></div>
       <div class="field"><span class="dot a"></span><input id="pu" placeholder="Pickup — locating…"><button id="gps" title="Use my location">◎</button></div><ul id="pul" class="sugg"></ul>
+      <input id="note" placeholder="Note for driver (e.g. blue door, by the bodega)" maxlength="120" value="${esc(pickup?.note || '')}">
       <div class="field"><span class="dot b"></span><input id="de" placeholder="Where to?"></div><ul id="del" class="sugg"></ul>
-      <p class="fine">Tip: tap the map to set ${'<b>destination</b>'} (long-press for pickup).</p>
+      <p class="fine">Drag the green <b>A</b> pin to your exact spot. Tap the map to set the destination.</p>
+      <div class="seg"><button id="wnow" class="on">Now</button><button id="wsch">Schedule</button></div><input id="when" type="datetime-local" hidden>
       <label class="tog"><input type="checkbox" id="demo" ${demo ? 'checked' : ''}> Demo mode — show simulated drivers (clearly labeled)</label>
-      <div id="est"></div><button class="btn" id="req" disabled>Request ride</button>`;
+      <div id="est"></div><button class="btn" id="req" disabled>Request ride</button>
+      ${sched.length ? `<h3>Upcoming</h3>${sched.map(s => `<div class="card hist sched"><div><b>${esc(s.dest.label.split(',')[0])}</b><div class="muted">${new Date(s.pickupAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })} · driver search starts 30 min before</div></div><button class="btn link sm" data-x="${s.id}">Cancel</button></div>`).join('')}` : ''}`;
       autocomplete($('#pu'), $('#pul'), () => pickup || QUEENS, (r) => setPickup(r, r.label));
       autocomplete($('#de'), $('#del'), () => pickup || QUEENS, (r) => setDest(r));
       $('#gps').onclick = locate; $('#hist').onclick = (e) => { e.preventDefault(); history(); };
       $('#demo').onchange = (e) => { demo = e.target.checked; store.set('demo', demo); demo ? spawnSims() : stopSims(); };
-      $('#req').onclick = request;
+      $('#note').oninput = (e) => { if (pickup) pickup.note = e.target.value; };
+      $('#wnow').onclick = () => { $('#wnow').classList.add('on'); $('#wsch').classList.remove('on'); $('#when').hidden = true; $('#req').textContent = 'Request ride'; };
+      $('#wsch').onclick = () => { $('#wsch').classList.add('on'); $('#wnow').classList.remove('on'); const w = $('#when'); w.hidden = false; const d = new Date(Date.now() + 60 * 60e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); w.min = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16); w.value ||= d.toISOString().slice(0, 16); $('#req').textContent = 'Schedule ride'; };
+      sheet.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== b.dataset.x)); plan(); });
+      $('#req').onclick = () => $('#when').hidden ? startRequest() : schedule();
       if (pickup) { $('#pu').value = pickup.label || ''; } else locate();
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
+    }
+    function schedule() {
+      const at = new Date($('#when').value).getTime();
+      if (!(at > Date.now() + 5 * 60e3)) { $('#est').insertAdjacentHTML('beforeend', '<p class="err">Pick a time at least 5 minutes from now.</p>'); return; }
+      const s = { id: 's-' + uid(), pickupAt: at, pickup: { ...pickup }, dest: { ...dest } };
+      store.set('scheduled', [...store.get('scheduled', []), s]);
+      if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+      notify(`Ride scheduled for ${new Date(at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}. Keep Rocapulco open (or reopen it) by 30 min before — we'll alert you then.`);
+      plan();
     }
     async function locate() {
       $('#pu').placeholder = 'Locating…';
@@ -172,66 +241,106 @@ function rider() {
       if (!p) { $('#pu').placeholder = 'Location blocked — type your pickup'; return; }
       setPickup(p, await reverse(p));
     }
-    function setPickup(p, label) {
-      pickup = { lat: p.lat, lng: p.lng, label }; if ($('#pu')) $('#pu').value = label;
-      pinP ? pinP.setLatLng(p) : (pinP = L.marker(p, { icon: pinA }).addTo(layer)); map.setView(p, 15); spawnSims(); estimate();
+    function setPickup(p, label, recenter = true) {
+      pickup = { lat: p.lat, lng: p.lng, label, note: pickup?.note || '' }; if ($('#pu')) $('#pu').value = label;
+      if (pinP) pinP.setLatLng(p); else { pinP = L.marker(p, { icon: pinA, draggable: true, zIndexOffset: 900 }).addTo(layer); pinP.on('dragend', async () => { const ll = pinP.getLatLng(); setPickup({ lat: ll.lat, lng: ll.lng }, await reverse({ lat: ll.lat, lng: ll.lng }), false); }); }
+      if (recenter) map.setView(p, 16); spawnSims(); estimate();
     }
     async function setDest(p) { dest = { lat: p.lat, lng: p.lng, label: p.label || await reverse(p) }; if ($('#de')) $('#de').value = dest.label; pinD ? pinD.setLatLng(p) : (pinD = L.marker(p, { icon: pinB }).addTo(layer)); estimate(); }
     const onTap = (e) => { if (trip) return; setDest({ lat: e.latlng.lat, lng: e.latlng.lng }); };
-    const onHold = (e) => { if (trip) return; reverse(e.latlng).then(l => setPickup(e.latlng, l)); };
+    const onHold = (e) => { if (trip) return; reverse(e.latlng).then(l => setPickup(e.latlng, l, false)); };
     map.on('click', onTap); map.on('contextmenu', onHold); cleanup.push(() => { map.off('click', onTap); map.off('contextmenu', onHold); });
     async function estimate() {
-      if (!pickup || !dest) return;
+      if (!pickup || !dest || !$('#est')) return;
       $('#est').innerHTML = '<p class="muted">Calculating route…</p>';
-      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label });
+      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, surge: surgeNow() });
       line?.remove(); line = L.polyline(rt.latlngs, { color: '#111', weight: 5 }).addTo(layer); map.fitBounds(line.getBounds(), { padding: [40, 40], paddingBottomRight: [20, 320] });
-      const near = rankDrivers([...drivers.values()], pickup)[0];
       if (!$('#est')) return;
-      $('#est').innerHTML = `<div class="card fare"><div><b>Rocapulco Supreme</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)}${rt.real ? '' : ' (approx.)'}${near ? ' · nearest car ' + fmtDist(near.dist) : ''}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>${fare.flat ? '<p class="demo">✈️ Airport flat rate</p>' : ''}
-      <p class="fine">Estimate ${money(fare.low)}–${money(fare.high)} (${fare.flat ? 'airport flat rate' : '$5 base + $2.50/mi + $0.40/min'}); tolls & tip extra. <b>Pay driver directly (cash/card)</b> — no payment is taken here.</p>`;
+      const n = rankDrivers([...drivers.values()], pickup).length;
+      $('#est').innerHTML = `<div class="card fare"><div><b>Rocapulco Supreme</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)} ride${rt.real ? '' : ' (approx.)'} · ${n ? n + ' car' + (n > 1 ? 's' : '') + ' nearby' : 'no cars nearby yet'}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>
+      ${fare.surge > 1 ? `<p class="surge" id="surge">⚡ Busy-time pricing ×${fare.surge.toFixed(2)} — ${esc(surgeCfg.reason || 'high demand')}. Capped at ×${SURGE_CAP}.</p>` : ''}
+      <details class="bd" id="bd"><summary>Fare breakdown — no hidden fees</summary>${fare.lines.map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total you pay</span><b>${money(fare.total)}</b></div><p class="fine">No booking, service or cancellation fees. Tolls (if any) and tip are your choice and paid to the driver. ${fare.flat ? 'Airport flat rate is fixed.' : `Final fare uses the actual route; usually ${money(fare.low)}–${money(fare.high)}.`}</p></details>
+      <p class="fine">You'll see your driver's real ETA once a driver accepts. <b>Pay driver directly (cash/card)</b> — no payment is taken here.</p>`;
       $('#req').disabled = false;
     }
-    async function request() {
-      trip = { id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup, dest, fare: fare.total, miles: fare.miles, minutes: fare.minutes, ts: Date.now() };
+    // ---- dispatch: rank by road ETA (OSRM table), one offer at a time, 15 s each, auto-reassign ----
+    async function startRequest(sched) {
+      if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, surge: surgeNow() }); }
+      if (sched) { sched.started = true; store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== sched.id)); }
+      trip = { id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
       sub('trip/' + trip.id, onTrip);
-      bus.publish('trip/' + trip.id, { type: 'request', trip });
-      dmk.forEach(m => m.remove());
-      sheet.innerHTML = `<h2>Finding your driver…</h2><div class="spinner"></div><p class="muted" id="ds">Contacting nearby drivers</p><button class="btn alt" id="cx">Cancel</button>`;
+      bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
+      dispatch('Finding your driver…');
+    }
+    const pub = (t) => ({ id: t.id, rider: t.rider, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
+    async function dispatch(title) {
+      dmk.forEach(m => m.remove()); carMk?.remove(); carMk = null; clearInterval(tick);
+      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="spinner"></div><p class="muted" id="ds">Contacting the closest driver by road time</p><p class="fine">No ETA is shown until a real driver accepts.</p><button class="btn alt" id="cx">Cancel (free)</button>`;
       $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); trip.state = 'cancelled'; plan(); };
-      trip.state = 'requested'; const excl = [], t0 = Date.now();
-      while (trip && trip.state === 'requested') {
-        const c = rankDrivers([...drivers.values()], pickup, { exclude: excl })[0];
-        if (!c) { if (Date.now() - t0 > 45000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">No online drivers within 9 miles right now. Try again, or turn on Demo mode to see how it works.</p><button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
-        trip.state = 'offered'; trip.offerTo = c.id; if ($('#ds')) $('#ds').textContent = `Offering to ${c.name} (${fmtDist(c.dist)} away)…`;
-        bus.publish('offer/' + c.id, { trip: { ...trip, state: undefined } });
-        const t1 = Date.now(); while (trip && trip.state === 'offered' && Date.now() - t1 < 20000) await wait(300);
-        if (trip && trip.state === 'offered') { excl.push(c.id); trip.state = 'requested'; bus.publish('trip/' + trip.id, { type: 'timeout', driver: c.id }); }
+      trip.state = 'requested'; trip.driver = null; const t0 = Date.now(), me_t = trip;
+      while (trip === me_t && trip.state === 'requested') {
+        const near = rankDrivers([...drivers.values()], pickup, { exclude: trip.excl }).slice(0, 5);
+        if (!near.length) { if (Date.now() - t0 > 45000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">No online drivers within 9 miles right now. Nothing was charged. Try again, or turn on Demo mode to see how it works.</p><button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
+        const ranked = rankByRoad(near, await roadTimes(near, pickup)); const c = ranked[0];
+        trip.state = 'offered'; trip.offerTo = c.id; if ($('#ds')) $('#ds').textContent = `Asking ${c.name}${c.roadSec != null ? ` (${fmtMin(c.roadSec)} away by road)` : ''}…`;
+        bus.publish('offer/' + c.id, { trip: pub(trip) });
+        const t1 = Date.now(); while (trip === me_t && trip.state === 'offered' && Date.now() - t1 < 18000) await wait(300);
+        if (trip === me_t && trip.state === 'offered') { trip.excl.push(c.id); trip.state = 'requested'; bus.publish('trip/' + trip.id, { type: 'timeout', driver: c.id }); }
       }
     }
+    function reassign(why) { if (!trip) return; trip.excl.push(trip.driver?.id); bus.publish('trip/' + trip.id, { type: 'reassign', driver: trip.driver?.id, why }); notify(why + ' — finding you another driver. No charge.'); dispatch('Finding you another driver…'); }
     function onTrip(m) {
       if (!trip || trip.state === 'cancelled') return;
-      if (m.type === 'decline' && trip.state === 'offered' && m.driver === trip.offerTo) trip.state = 'requested';
+      if (m.type === 'decline' && trip.state === 'offered' && m.driver === trip.offerTo) { trip.excl.push(m.driver); trip.state = 'requested'; }
       if (m.type === 'accept' && trip.state === 'offered' && m.driver.id === trip.offerTo) {
-        trip.state = 'accepted'; trip.driver = m.driver; carMk = L.marker([m.driver.lat, m.driver.lng], { icon: carIcon(m.driver), zIndexOffset: 1000 }).addTo(layer);
-        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="av">🚕</div><div><b>${esc(m.driver.name)}</b> ★${m.driver.rating ?? '5.0'}<div class="muted">${esc(m.driver.car)} · <b>${esc(m.driver.plate)}</b></div></div><div class="eta" id="eta">—</div></div>
-        ${m.driver.sim ? '<p class="demo">DEMO: this is a simulated driver</p>' : m.driver.phone ? `<a class="btn alt" href="tel:${esc(m.driver.phone)}">Call driver</a>` : ''}
-        <p class="muted">Pickup: ${esc(pickup.label)}</p><button class="btn alt" id="cx">Cancel ride</button>`;
-        $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); trip.state = 'cancelled'; carMk.remove(); plan(); };
+        trip.state = 'accepted'; trip.driver = m.driver; trip.matchedAt = Date.now(); trip.lastLoc = Date.now(); trip.promised = null; trip.eta = null;
+        carMk = L.marker([m.driver.lat, m.driver.lng], { icon: carIcon(m.driver), zIndexOffset: 1000 }).addTo(layer);
+        if (trip.scheduledFor) notify(`${m.driver.name} confirmed for your scheduled ride.`);
+        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="av">🚕</div><div><b>${esc(m.driver.name)}</b> ★${m.driver.rating ?? '5.0'}<div class="muted">${esc(m.driver.car)} · <b>${esc(m.driver.plate)}</b></div></div><div class="eta" id="eta">…</div></div>
+        ${m.driver.sim ? '<p class="demo">DEMO: this is a simulated driver</p>' : ''}
+        <div class="two eq">${m.driver.phone ? `<a class="btn alt" href="tel:${esc(m.driver.phone)}">📞 Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">💬 Message</button></div><div id="chat"></div>
+        <p class="muted">Pickup: ${esc(trip.pickup.label)}${trip.pickup.note ? ' · “' + esc(trip.pickup.note) + '”' : ''} · ${money(trip.fare)}</p>
+        <p class="fine" id="cxs"></p><button class="btn alt" id="cx">Cancel ride</button><button class="btn danger" id="ns" hidden>Driver never showed — report & cancel</button>`;
+        chatBox($('#chat'), $('#chatb'), trip.id, 'rider');
+        $('#cx').onclick = () => { const s = cancelStatus({ matchedAt: trip.matchedAt, now: Date.now(), promisedEtaSec: trip.promised, currentEtaSec: trip.eta }); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', late: !s.free }); trip.state = 'cancelled'; carMk?.remove(); plan(); };
+        $('#ns').onclick = noShow;
+        tick = setInterval(() => {
+          if (!trip || !$('#cxs')) return;
+          const now = Date.now(), s = cancelStatus({ matchedAt: trip.matchedAt, now, promisedEtaSec: trip.promised, currentEtaSec: trip.eta });
+          if (trip.state === 'accepted' || trip.state === 'arrived') $('#cxs').innerHTML = s.free ? (s.late ? 'Driver is running late — cancelling is free.' : `Free cancellation for <b id="cxt">${Math.floor(s.leftMs / 60000)}:${String(Math.floor(s.leftMs / 1000) % 60).padStart(2, '0')}</b>`) : 'Free-cancel window ended. (There are never cancellation fees — the app takes no payments — but late cancels are noted for drivers.)';
+          if (trip.state === 'accepted' && trip.promised != null && noShowAllowed({ matchedAt: trip.matchedAt, now, promisedEtaSec: trip.promised * NOSHOW_SCALE, arrived: false, graceSec: NOSHOW_GRACE })) $('#ns').hidden = false;
+          if (trip.state === 'accepted' && now - trip.lastLoc > 60000) reassign('Lost contact with your driver');
+        }, 1000);
       }
-      if (!trip.driver || (m.driver && (m.driver.id || m.driver) !== trip.driver.id && m.type !== 'loc')) return;
-      if (m.type === 'loc' && carMk) { carMk.setLatLng([m.lat, m.lng]); if ($('#eta')) $('#eta').textContent = fmtMin(m.eta); map.panTo([m.lat, m.lng], { animate: true }); }
-      if (m.type === 'arrived') { trip.state = 'arrived'; $('#st').textContent = 'Your driver has arrived'; if ($('#eta')) $('#eta').textContent = 'Here'; navigator.vibrate?.(300); $('#cx') && ($('#cx').textContent = 'Cancel'); }
-      if (m.type === 'start') { trip.state = 'in_progress'; $('#st').textContent = 'On the way to ' + dest.label.split(',')[0]; $('#cx')?.remove(); }
-      if (m.type === 'cancel' && m.by === 'driver') { carMk?.remove(); trip = null; sheet.innerHTML = `<h2>Driver cancelled</h2><button class="btn" id="bk">Request again</button>`; $('#bk').onclick = () => { plan(); }; }
-      if (m.type === 'complete') { trip.state = 'completed'; receipt(m); }
+      if (!trip.driver || (m.driver && (m.driver.id || m.driver) !== trip.driver.id && m.type !== 'loc' && m.type !== 'chat')) return;
+      if (m.type === 'loc' && carMk) {
+        trip.lastLoc = Date.now(); animateTo(carMk, [m.lat, m.lng]);
+        if (trip.state === 'accepted') { trip.eta = smooth(trip.eta, m.eta); if (trip.promised == null) trip.promised = m.eta; if ($('#eta')) $('#eta').textContent = fmtMin(trip.eta); }
+        if (trip.state === 'in_progress' && $('#eta')) $('#eta').textContent = fmtMin(m.eta);
+        map.panTo([m.lat, m.lng], { animate: true });
+      }
+      if (m.type === 'arrived') { trip.state = 'arrived'; $('#st').textContent = 'Your driver has arrived'; if ($('#eta')) $('#eta').textContent = 'Here'; $('#ns') && ($('#ns').hidden = true); navigator.vibrate?.(300); notify('Your driver has arrived'); }
+      if (m.type === 'start') { trip.state = 'in_progress'; clearInterval(tick); $('#st').textContent = 'On the way to ' + dest.label.split(',')[0]; $('#cx')?.remove(); $('#ns')?.remove(); $('#cxs') && ($('#cxs').textContent = ''); }
+      if (m.type === 'cancel' && m.by === 'driver') reassign('Your driver cancelled');
+      if (m.type === 'complete') { trip.state = 'completed'; clearInterval(tick); receipt(m); }
+    }
+    function noShow() {
+      const r = { id: 'r-' + uid(), trip: trip.id, kind: 'driver_no_show', driver: trip.driver.name, plate: trip.driver.plate, at: new Date().toISOString(), rider: me.name };
+      bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', reason: 'driver_no_show' });
+      bus.publish('reports/' + r.id, r); store.set('reports', [r, ...store.get('reports', [])]);
+      clearInterval(tick); carMk?.remove(); const t = trip; trip = null;
+      sheet.innerHTML = `<h2 id="nsdone">Sorry about that — reported</h2><div class="card"><div class="row"><span>Charge</span><b>$0.00</b></div><div class="row"><span>Driver</span><span>${esc(r.driver)} · ${esc(r.plate)}</span></div><div class="row"><span>Report #</span><span>${r.id}</span></div></div><p class="fine">No payment was ever taken, so there is nothing to refund. The report was sent to the dispatcher and saved on this device.</p><button class="btn" id="again">Find another driver now</button><button class="btn alt" id="bk">Back</button>`;
+      $('#again').onclick = () => { trip = t; trip.excl.push(t.driver.id); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }); dispatch('Finding you another driver…'); };
+      $('#bk').onclick = plan;
     }
     function receipt(m) {
-      const rec = { id: trip.id, date: new Date().toISOString(), from: pickup.label, to: dest.label, fare: m.fare, miles: +(m.meters / 1609.344).toFixed(2), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate };
+      const rec = { id: trip.id, date: new Date().toISOString(), from: trip.pickup.label, to: dest.label, fare: m.fare, lines: m.lines || trip.lines, miles: +(m.meters / 1609.344).toFixed(2), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate };
       const h = store.get('history_rider', []); h.unshift(rec); store.set('history_rider', h.slice(0, 100));
-      sheet.innerHTML = `<h2 id="done">You've arrived 🎉</h2><div class="card rcpt"><div class="row"><span>Fare</span><b id="rfare">${money(m.fare)}</b></div><div class="row"><span>Distance</span><span>${rec.miles} mi</span></div><div class="row"><span>Driver</span><span>${esc(rec.driver)} · ${esc(rec.plate)}</span></div><div class="row"><span>From</span><span>${esc(rec.from)}</span></div><div class="row"><span>To</span><span>${esc(rec.to)}</span></div></div>
+      sheet.innerHTML = `<h2 id="done">You've arrived 🎉</h2><div class="card rcpt">${(rec.lines || []).map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total</span><b id="rfare">${money(m.fare)}</b></div><div class="row"><span>Driver</span><span>${esc(rec.driver)} · ${esc(rec.plate)}</span></div><div class="row"><span>From</span><span>${esc(rec.from)}</span></div><div class="row"><span>To</span><span>${esc(rec.to)}</span></div></div>
       <p class="fine"><b>Pay ${money(m.fare)} directly to your driver</b> (cash or their card reader). Rocapulco Supreme does not process payments.</p>
-      <p>Rate your ride</p><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}">★</button>`).join('')}</div><button class="btn" id="fin">Done</button>`;
+      <p>Rate your ride</p><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}">★</button>`).join('')}</div><button class="btn" id="fin">Done</button><button class="btn link" id="prob">Report a problem</button>`;
       sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + trip.id, { type: 'rate', stars: s, driver: trip.driver.id }); rec.stars = s; store.set('history_rider', [rec, ...store.get('history_rider', []).slice(1)]); });
+      $('#prob').onclick = () => { const r = { id: 'r-' + uid(), trip: trip.id, kind: 'trip_problem', driver: trip.driver.name, plate: trip.driver.plate, at: new Date().toISOString(), rider: me.name }; bus.publish('reports/' + r.id, r); $('#prob').textContent = 'Reported to dispatcher ✓ (#' + r.id + ')'; };
       $('#fin').onclick = () => { carMk?.remove(); line?.remove(); pinD?.remove(); pinD = line = null; dest = null; trip = null; plan(); };
     }
     function history() {
@@ -247,19 +356,30 @@ function rider() {
 function driver() {
   profileForm('driver', (me) => {
     let online = false, status = 'offline', loc = null, simulate = store.get('simgps', false), trip = null, rt = null, phase = null, simM = 0, lastStep = null, offer = null, rerouting = false;
-    let meMk, line, watchId;
+    let meMk, line, watchId, gpsMode = null, lastPub = null, home = store.get('home', null), homeMode = store.get('homeMode', false);
     const info = () => ({ id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
     const avgRating = () => { const r = store.get('ratings', []); return r.length ? +(r.reduce((a, b) => a + b, 0) / r.length).toFixed(2) : 5.0; };
-    const presence = () => { if (loc && (online || status === 'offline')) bus.publish('drivers/' + me.id, info()); };
-    every(presence, 5000);
-    sub('offer/' + me.id, (m) => { if (status !== 'available' || offer) return bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id }); showOffer(m.trip); });
+    const presence = (force) => { if (!loc || !(online || status === 'offline')) return;
+      // battery/data friendly: publish only when moved >25 m, status changed, or every 15 s
+      if (!force && lastPub && lastPub.status === status && haversine(lastPub, loc) < 25 && Date.now() - lastPub.ts < 15000) return;
+      lastPub = { lat: loc.lat, lng: loc.lng, status, ts: Date.now() }; bus.publish('drivers/' + me.id, info()); };
+    every(() => presence(), 5000);
+    sub('offer/' + me.id, (m) => {
+      if (status !== 'available' || offer) return bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id, why: 'busy' });
+      if (homeMode && home && !homeFilterOk({ driver: loc, dest: m.trip.dest, home })) { bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id, why: 'heading_home' }); skipped++; $('#hskip') && ($('#hskip').textContent = skipped + ' skipped (not toward home)'); return; }
+      showOffer(m.trip); });
+    let skipped = 0;
     const setLoc = (p) => {
-      loc = p; meMk ? meMk.setLatLng(p) : (meMk = L.marker(p, { icon: carIcon(), zIndexOffset: 1000 }).addTo(layer));
+      loc = p; meMk ? animateTo(meMk, [p.lat, p.lng], 800) : (meMk = L.marker(p, { icon: carIcon(), zIndexOffset: 1000 }).addTo(layer));
       if (trip && rt) onMove();
     };
+    // Battery-friendly GPS: low-power (network/wifi, 30 s cache) while waiting; high-accuracy only during a trip.
     async function startGPS() {
-      if (watchId != null) return;
-      if (!simulate && navigator.geolocation) watchId = navigator.geolocation.watchPosition(p => setLoc({ lat: p.coords.latitude, lng: p.coords.longitude }), () => {}, { enableHighAccuracy: true, maximumAge: 2000 });
+      const want = trip ? 'high' : 'low';
+      if (watchId != null && gpsMode === want) return;
+      if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+      gpsMode = want;
+      if (!simulate && navigator.geolocation) watchId = navigator.geolocation.watchPosition(p => { if (p.coords.accuracy > 100 && loc) return; setLoc({ lat: p.coords.latitude, lng: p.coords.longitude }); }, () => {}, want === 'high' ? { enableHighAccuracy: true, maximumAge: 2000 } : { enableHighAccuracy: false, maximumAge: 30000 });
       if (!loc) { const p = await getPos(); setLoc(p || QUEENS); map.setView(loc, 15); }
     }
     cleanup.push(() => { if (watchId != null) navigator.geolocation.clearWatch(watchId); if (online) { status = 'offline'; presence(); } });
@@ -271,12 +391,17 @@ function driver() {
       <button class="btn big ${online ? 'alt' : ''}" id="tg">${online ? 'Go offline' : 'Go online'}</button>
       <p id="dst" class="muted">${online ? '🟢 Online — waiting for ride requests near you' : '⚪ Offline'}</p>
       <div class="grid"><div class="card stat"><span>Today</span><b id="etoday">${money(e.today)}</b></div><div class="card stat"><span>Trips today</span><b>${e.n}</b></div><div class="card stat"><span>This week</span><b>${money(e.week)}</b></div><div class="card stat"><span>Rating</span><b>★ ${avgRating()}</b></div></div>
+      <div class="card"><label class="tog"><input type="checkbox" id="hm" ${homeMode ? 'checked' : ''}> <b>Heading home</b> — only rides that end closer to home. No daily limit.</label>
+      <div class="muted">${home ? 'Home set ✓' : 'No home set'} · <a href="#" id="sethome">Set home to my current spot</a> · <span id="hskip"></span></div></div>
+      <p class="fine">Declining a ride never hurts you — there is no acceptance rate. GPS: ${simulate ? 'simulated' : 'power-saver while waiting, high-accuracy on trips'}.</p>
       <label class="tog"><input type="checkbox" id="sim" ${simulate ? 'checked' : ''}> Simulate GPS (moves the car along the route — for testing indoors)</label>
       <label class="tog"><input type="checkbox" id="vo" ${store.get('voice', true) ? 'checked' : ''}> Voice directions</label>
       <a href="#" id="eh" class="btn link">Trip log</a>`;
-      $('#tg').onclick = async () => { online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); presence(); idle(); };
+      $('#tg').onclick = async () => { online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); presence(true); idle(); };
       $('#sim').onchange = (e) => { simulate = e.target.checked; store.set('simgps', simulate); if (simulate && watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; } else if (!simulate) startGPS(); };
       $('#vo').onchange = (e) => store.set('voice', e.target.checked);
+      $('#hm').onchange = (e) => { if (e.target.checked && !home) { e.target.checked = false; notify('Set your home first'); return; } homeMode = e.target.checked; store.set('homeMode', homeMode); };
+      $('#sethome').onclick = (e) => { e.preventDefault(); if (!loc) return notify('Waiting for GPS…'); home = { lat: loc.lat, lng: loc.lng }; store.set('home', home); notify('Home saved on this device (never shared).'); idle(); };
       $('#eh').onclick = (e) => { e.preventDefault(); const h = store.get('history_driver', []); sheet.innerHTML = `${tabs('driver')}<h2>Trip log</h2>${h.map(r => `<div class="card hist"><div><b>${esc(r.to.split(',')[0])}</b><div class="muted">${new Date(r.date).toLocaleString()} · ${esc(r.rider)}</div></div><b>${money(r.fare)}</b></div>`).join('') || '<p class="muted">No trips yet.</p>'}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = idle; };
       startGPS();
     }
@@ -287,17 +412,24 @@ function driver() {
     }
     function showOffer(t) {
       offer = t; navigator.vibrate?.([200, 100, 200]); speak('New ride request');
-      const d = haversine(loc, t.pickup); let left = 15;
-      sheet.innerHTML = `<h2>New ride request</h2><div class="card offer"><div class="price">${money(t.fare)}</div><div class="muted">${t.miles} mi trip · ${t.minutes} min · pickup ${fmtDist(d)} away</div>
-      <p><span class="dot a"></span> ${esc(t.pickup.label)}</p><p><span class="dot b"></span> ${esc(t.dest.label)}</p><p class="muted">Rider: ${esc(t.rider.name)}</p></div>
+      const d = haversine(loc, t.pickup) * 1.3; let left = 15;
+      const econ = (pm) => offerEconomics({ fare: t.fare, tripMeters: t.meters || t.miles * 1609.344, pickupMeters: pm });
+      const e0 = econ(d);
+      sheet.innerHTML = `<h2>New ride request</h2><div class="card offer"><div class="fare"><div class="price" id="ofare">${money(t.fare)}</div><div class="permi" id="opm">$${e0.perTripMile.toFixed(2)}/mi</div></div>
+      <div class="muted" id="oeco">${t.miles} mi trip · ${t.minutes} min · pickup ~${e0.pickupMiles} mi · $${e0.perTotalMile.toFixed(2)}/mi incl. pickup</div>
+      <p><span class="dot a"></span> <b>Pickup:</b> ${esc(t.pickup.label)}${t.pickup.note ? `<br><i>“${esc(t.pickup.note)}”</i>` : ''}</p><p><span class="dot b"></span> <b>Drop-off:</b> ${esc(t.dest.label)}</p>
+      <p class="muted">Rider: ${esc(t.rider.name)}${t.surge > 1 ? ` · busy-time ×${t.surge}` : ''}${t.scheduledFor ? ` · scheduled ${new Date(t.scheduledFor).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}</p>
+      ${homeMode && home ? `<p class="muted">${homeFilterOk({ driver: loc, dest: t.dest, home }) ? '🏠 Ends closer to home' : ''}</p>` : ''}</div>
+      <p class="fine">Upfront fare — what you see is what the rider pays. Declining is free, no penalty.</p>
       <div class="two"><button class="btn alt" id="dec">Decline</button><button class="btn" id="acc">Accept (<span id="cd">15</span>)</button></div>`;
-      const pp = L.marker(t.pickup, { icon: pinA }).addTo(layer); map.fitBounds([[loc.lat, loc.lng], [t.pickup.lat, t.pickup.lng]], { padding: [60, 60] });
+      const pp = L.marker(t.pickup, { icon: pinA }).addTo(layer), pd = L.marker(t.dest, { icon: pinB }).addTo(layer); map.fitBounds([[loc.lat, loc.lng], [t.pickup.lat, t.pickup.lng], [t.dest.lat, t.dest.lng]], { padding: [60, 60] });
+      route(loc, t.pickup).then(r => { if (offer !== t || !$('#oeco')) return; const e = econ(r.distance); $('#oeco').textContent = `${t.miles} mi trip · ${t.minutes} min · pickup ${e.pickupMiles} mi (${fmtMin(r.duration)}) · $${e.perTotalMile.toFixed(2)}/mi incl. pickup`; });
       const h = setInterval(() => { left--; if ($('#cd')) $('#cd').textContent = left; if (left <= 0) decline(); }, 1000);
-      const decline = () => { clearInterval(h); pp.remove(); offer = null; bus.publish('trip/' + t.id, { type: 'decline', driver: me.id }); idle(); };
+      const decline = () => { clearInterval(h); pp.remove(); pd.remove(); offer = null; bus.publish('trip/' + t.id, { type: 'decline', driver: me.id }); idle(); };
       $('#dec').onclick = decline;
-      $('#acc').onclick = async () => { clearInterval(h); pp.remove(); offer = null; trip = t; status = 'busy';
-        sub('trip/' + t.id, (m) => { if (trip && m.type === 'cancel' && m.by === 'rider') { speak('Rider cancelled'); endTrip(); sheet.innerHTML = '<h2>Rider cancelled the trip</h2><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } if (m.type === 'rate' && m.driver === me.id) { const r = store.get('ratings', []); r.push(m.stars); store.set('ratings', r.slice(-200)); } if (m.type === 'timeout' && m.driver === me.id && trip && phase === null) endTrip(); });
-        bus.publish('trip/' + t.id, { type: 'accept', driver: info() }); presence(); await navTo('pickup'); };
+      $('#acc').onclick = async () => { clearInterval(h); pp.remove(); pd.remove(); offer = null; trip = t; status = 'busy'; startGPS();
+        sub('trip/' + t.id, (m) => { if (trip && m.type === 'cancel' && m.by === 'rider') { speak('Rider cancelled'); endTrip(); sheet.innerHTML = '<h2>Rider cancelled the trip</h2><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } if (m.type === 'rate' && m.driver === me.id) { const r = store.get('ratings', []); r.push(m.stars); store.set('ratings', r.slice(-200)); } if (m.type === 'timeout' && m.driver === me.id && trip && phase === null) endTrip(); if (m.type === 'reassign' && m.driver === me.id && trip) { endTrip(); sheet.innerHTML = '<h2>Trip was reassigned</h2><p class="muted">The rider lost contact with you and was matched with another driver.</p><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } });
+        bus.publish('trip/' + t.id, { type: 'accept', driver: info() }); presence(true); await navTo('pickup'); };
     }
     async function navTo(p) {
       phase = p; const target = p === 'pickup' ? trip.pickup : trip.dest;
@@ -305,11 +437,12 @@ function driver() {
       line?.remove(); line = L.polyline(rt.latlngs, { color: p === 'pickup' ? '#2563eb' : '#111', weight: 6 }).addTo(layer); L.marker(target, { icon: p === 'pickup' ? pinA : pinB }).addTo(line._map ? layer : layer);
       map.fitBounds(line.getBounds(), { padding: [40, 40] });
       sheet.innerHTML = `<div class="nav"><div class="turn" id="turn">Starting navigation…</div><div class="muted" id="tdist"></div></div>
-      <div class="card"><b>${p === 'pickup' ? 'Pick up ' + esc(trip.rider.name) : 'Drop off at ' + esc(trip.dest.label.split(',')[0])}</b><div class="muted">${esc(target.label)}</div><div id="rem" class="muted"></div></div>
-      ${p === 'pickup' && trip.rider.phone ? `<a class="btn alt" href="tel:${esc(trip.rider.phone)}">Call rider</a>` : ''}
+      <div class="card"><b>${p === 'pickup' ? 'Pick up ' + esc(trip.rider.name) : 'Drop off at ' + esc(trip.dest.label.split(',')[0])}</b><div class="muted">${esc(target.label)}</div>${p === 'pickup' && trip.pickup.note ? `<div class="note">📍 “${esc(trip.pickup.note)}”</div>` : ''}<div id="rem" class="muted"></div></div>
+      <div class="two eq">${trip.rider.phone ? `<a class="btn alt" href="tel:${esc(trip.rider.phone)}">📞 Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">💬 Message</button></div><div id="chat"></div>
       <a class="btn alt" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=driving">Open in Google Maps</a>
       <button class="btn" id="act">${p === 'pickup' ? "I've arrived" : 'Complete trip'}</button>${p === 'pickup' ? '<button class="btn link" id="dcx">Cancel trip</button>' : ''}`;
       $('#act').onclick = p === 'pickup' ? arrived : complete;
+      chatBox($('#chat'), $('#chatb'), trip.id, 'driver');
       if ($('#dcx')) $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); endTrip(); idle(); };
       onMove();
     }
@@ -330,36 +463,44 @@ function driver() {
       $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); endTrip(); idle(); };
     }
     function complete() {
-      const f = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: trip.dest.label });
-      bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, meters: rt.distance, seconds: rt.duration });
+      const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked — no surprises
+      bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, lines: f.lines, meters: rt.distance, seconds: rt.duration });
       const h = store.get('history_driver', []); h.unshift({ id: trip.id, date: new Date().toISOString(), fare: f.total, to: trip.dest.label, rider: trip.rider.name }); store.set('history_driver', h.slice(0, 500));
       speak('Trip complete. Collect ' + f.total.toFixed(2) + ' dollars.');
       sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect from rider</div><div class="price">${money(f.total)}</div></div><p class="fine">Collect payment directly (cash or your card reader). Tolls extra. Rocapulco Supreme rates.</p><button class="btn" id="bk">Back online</button>`;
       endTrip(); $('#bk').onclick = idle;
     }
-    function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(); }
+    function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(true); startGPS(); }
     idle();
   });
 }
 
 // ===== DISPATCHER =====
 function admin() {
-  const drivers = new Map(), mk = new Map(), trips = new Map();
-  sheet.innerHTML = `${tabs('admin')}<h2>Dispatcher</h2><div class="grid"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div></div><div id="tl"></div><p class="fine">Live view of channel “${esc(NS)}”. Demo drivers shown with a dashed outline.</p>`;
+  const drivers = new Map(), mk = new Map(), trips = new Map(), reports = [];
+  let surge = store.get('admin_surge', { surge: 1, reason: '' });
+  sheet.innerHTML = `${tabs('admin')}<h2>Dispatcher</h2><div class="grid"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div></div>
+  <details class="bd"><summary>Busy-time pricing: <b id="sv">${surge.surge > 1 ? '×' + surge.surge : 'off'}</b></summary><input id="sg" type="range" min="1" max="${SURGE_CAP}" step="0.05" value="${surge.surge}"><input id="sr" placeholder="Reason riders will see (required)" value="${esc(surge.reason)}"><p class="fine">Off by default. Hard cap ×${SURGE_CAP}. Never applied to airport flat rates. Active only while this page is open.</p></details>
+  <div id="rp"></div><div id="tl"></div><p class="fine">Live view of channel “${esc(NS)}”. Demo drivers shown with a dashed outline.</p>`;
+  const save = () => { const v = +$('#sg').value, r = $('#sr').value.trim(); surge = { surge: r ? v : 1, reason: r }; store.set('admin_surge', surge); $('#sv').textContent = surge.surge > 1 ? '×' + surge.surge : (v > 1 ? 'add a reason' : 'off'); bus.publish('config', { ...surge, ts: Date.now() }); };
+  $('#sg').oninput = save; $('#sr').oninput = save;
+  every(() => { if (surge.surge > 1) bus.publish('config', { ...surge, ts: Date.now() }); }, 10000);
   const draw = () => {
-    const now = Date.now(), on = [...drivers.values()].filter(d => d.status !== 'offline' && now - d.ts < 20000);
+    const now = Date.now(), on = [...drivers.values()].filter(d => d.status !== 'offline' && now - d.ts < 30000);
     $('#nd') && ($('#nd').textContent = on.length);
     mk.forEach((m, id) => { if (!on.find(d => d.id === id)) { m.remove(); mk.delete(id); } });
     const list = [...trips.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
     $('#nt') && ($('#nt').textContent = list.filter(t => !['completed', 'cancelled'].includes(t.state)).length);
+    $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>⚠️ ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
     $('#tl') && ($('#tl').innerHTML = list.map(t => `<div class="card hist"><div><b>${esc(t.rider)} → ${esc(t.to)}</b><div class="muted">${esc(t.state)}${t.driver ? ' · ' + esc(t.driver) : ''} · ${new Date(t.ts).toLocaleTimeString()}</div></div><b>${money(t.fare || 0)}</b></div>`).join(''));
   };
-  sub('drivers/+', (d) => { drivers.set(d.id, d); if (d.status === 'offline') return draw(); if (!mk.has(d.id)) mk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).bindTooltip(`${d.name} · ${d.status}`).addTo(layer)); else mk.get(d.id).setLatLng([d.lat, d.lng]).setTooltipContent(`${d.name} · ${d.status}`); draw(); });
+  sub('drivers/+', (d) => { drivers.set(d.id, d); if (d.status === 'offline') return draw(); if (!mk.has(d.id)) mk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).bindTooltip(`${d.name} · ${d.status}`).addTo(layer)); else { animateTo(mk.get(d.id), [d.lat, d.lng]); mk.get(d.id).setTooltipContent(`${d.name} · ${d.status}`); } draw(); });
+  sub('reports/+', (r) => { reports.unshift(r); draw(); });
   sub('trip/+', (m, topic) => {
     const id = topic.split('/')[1];
-    if (m.type === 'request') trips.set(id, { rider: m.trip.rider.name, to: m.trip.dest.label.split(',')[0], fare: m.trip.fare, ts: m.trip.ts, state: 'requested' });
+    if (m.type === 'request' && !trips.has(id)) trips.set(id, { rider: m.trip.rider.name, to: m.trip.dest.label.split(',')[0], fare: m.trip.fare, ts: m.trip.ts, state: m.trip.scheduledFor ? 'scheduled, dispatching' : 'requested' });
     const t = trips.get(id); if (!t) return;
-    const st = { accept: 'driver en route', arrived: 'driver arrived', start: 'in trip', complete: 'completed', cancel: 'cancelled' }[m.type];
+    const st = { accept: 'driver en route', arrived: 'driver arrived', start: 'in trip', complete: 'completed', cancel: m.reason === 'driver_no_show' ? 'cancelled — driver no-show' : 'cancelled', reassign: 'reassigning' }[m.type];
     if (st) t.state = st; if (m.type === 'accept') t.driver = m.driver.name; if (m.type === 'complete') t.fare = m.fare; draw();
   });
   every(draw, 5000);

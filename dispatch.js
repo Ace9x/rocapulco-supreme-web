@@ -61,3 +61,33 @@ export function instruction(step) {
   }
 }
 function compass(b) { return ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'][Math.round(b / 45) % 8]; }
+// Heading-home filter: only offers whose drop-off brings the driver meaningfully closer to home. No daily use limit.
+export function homeFilterOk({ driver, dest, home, minGainM = 500 }) {
+  if (!home) return true;
+  return haversine(dest, home) <= haversine(driver, home) - minGainM;
+}
+// Re-rank straight-line candidates by road travel time (seconds from OSRM table). null durations go last.
+export function rankByRoad(cands, durations) {
+  return cands.map((c, i) => ({ ...c, roadSec: durations?.[i] ?? null }))
+    .sort((a, b) => (a.roadSec ?? Infinity) - (b.roadSec ?? Infinity) || a.dist - b.dist);
+}
+// Free-cancel window: free for FREE_CANCEL_MS after match, and always free if the driver is >5 min later than promised.
+export const FREE_CANCEL_MS = 3 * 60 * 1000;
+export function cancelStatus({ matchedAt, now, promisedEtaSec, currentEtaSec }) {
+  const left = Math.max(0, matchedAt + FREE_CANCEL_MS - now);
+  const late = promisedEtaSec != null && currentEtaSec != null && (now - matchedAt) / 1000 + currentEtaSec > promisedEtaSec + 300;
+  return { free: left > 0 || late, leftMs: left, late };
+}
+// Driver no-show: allowed once the promised arrival time has passed by 5 minutes without an "arrived".
+export function noShowAllowed({ matchedAt, now, promisedEtaSec, arrived, graceSec = 300 }) {
+  return !arrived && now > matchedAt + (promisedEtaSec + graceSec) * 1000;
+}
+// Scheduled rides: dispatch window opens 30 min before pickup; alert the rider at T-30 either way.
+export const SCHED_LEAD_MS = 30 * 60 * 1000;
+export function scheduleState({ pickupAt, now, matched, lead = SCHED_LEAD_MS }) {
+  if (now < pickupAt - lead) return 'waiting';
+  if (matched) return 'matched';
+  return now > pickupAt + 15 * 60 * 1000 ? 'expired' : 'dispatching';
+}
+// Exponential smoothing for ETA so the number doesn't jump around.
+export const smooth = (prev, next, a = 0.35) => prev == null ? next : prev + a * (next - prev);
