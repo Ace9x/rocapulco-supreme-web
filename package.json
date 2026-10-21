@@ -15,6 +15,11 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@playwright/test": "^1.64.1"
+    "@playwright/test": "^1.64.1",
+    "esbuild": "^0.28.2",
+    "nostr-tools": "^2.25.2"
+  },
+  "dependencies": {
+    "mqtt": "^5.16.1"
   }
 }

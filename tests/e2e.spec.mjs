@@ -3,12 +3,12 @@ const BASE = process.env.BASE || 'http://localhost:8099/';
 const T = process.env.TRANSPORT || 'local';
 const ns = 'e2e' + Date.now();
 const url = (h) => `${BASE}?transport=${T}&ns=${ns}&speed=20${h}`;
-const SHOTS = '/workspace/taxi-shots/';
+const SHOTS = process.env.SHOTS || '/workspace/taxi-shots/';
 test.setTimeout(240000);
 test('rider + real driver complete a full trip with simulated GPS', async ({ browser }) => {
   const opt = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, geolocation: { latitude: 40.7466, longitude: -73.8913 }, permissions: ['geolocation'] };
   const ctx = await browser.newContext(opt); // same context => BroadcastChannel works in local mode
-  const dctx = T === 'mqtt' ? await browser.newContext(opt) : ctx; // separate browsers over the live broker
+  const dctx = T !== 'local' ? await browser.newContext(opt) : ctx; // separate browsers over the live broker
   const d = await dctx.newPage(), r = await ctx.newPage();
   for (const p of [d, r]) p.on('pageerror', e => console.log('PAGEERROR', e.message));
   await d.goto(url('#/driver'));

@@ -14,7 +14,7 @@ const fmtMin = (s) => Math.max(1, Math.round(s / 60)) + ' min';
 const fmtDist = (m) => m < 160 ? Math.round(m * 3.281 / 10) * 10 + ' ft' : (m / 1609.344).toFixed(1) + ' mi';
 const QUEENS = { lat: 40.7282, lng: -73.7949 };
 
-const bus = new Bus({ mode: Q.get('transport') === 'local' ? 'local' : 'mqtt', ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
+const bus = new Bus({ mode: ['local', 'mqtt'].includes(Q.get('transport')) ? Q.get('transport') : 'nostr', ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
@@ -81,10 +81,10 @@ class SimDriver {
     const [name, car, plate] = NAMES[i % 4];
     Object.assign(this, { id: 'sim-' + uid(), name: name + ' (demo)', car, plate: plate.replace('xx', String(10 + i * 17)), owner, sim: true, status: 'available', lat: near.lat + r * Math.sin(a), lng: near.lng + r * Math.cos(a) * 1.3, rating: 4.9 });
     this.beat = setInterval(() => this.presence(), 3000); this.presence();
-    bus.subscribe('offer/' + this.id, (m) => this.onOffer(m.trip));
+    this.unsub = bus.subscribe('offer/' + this.id, (m) => this.onOffer(m.trip));
   }
   info() { const { id, name, car, plate, sim, owner, status, lat, lng, rating } = this; return { id, name, car, plate, sim, owner, status, lat, lng, rating, ts: Date.now() }; }
-  presence() { bus.publish('drivers/' + this.id, this.info()); }
+  presence() { bus.publish('drivers/' + this.id, this.info(), { localOnly: true }); }
   async onOffer(trip) {
     if (this.status !== 'available') return bus.publish('trip/' + trip.id, { type: 'decline', driver: this.id });
     this.status = 'busy'; await wait(1500);
@@ -101,12 +101,12 @@ class SimDriver {
     for (let m = 0; m < rt.distance; m += 15 * SPEED) {
       Object.assign(this, pointAlong(rt.coords, rt.cum, m));
       const p = progress(rt, this);
-      bus.publish('trip/' + trip.id, { type: 'loc', lat: this.lat, lng: this.lng, eta: p.eta, remain: p.remain });
+      bus.publish('trip/' + trip.id, { type: 'loc', lat: this.lat, lng: this.lng, eta: p.eta, remain: p.remain }, { localOnly: true });
       await wait(1000);
     }
     Object.assign(this, pointAlong(rt.coords, rt.cum, rt.distance));
   }
-  stop() { clearInterval(this.beat); this.status = 'offline'; this.presence(); }
+  stop() { clearInterval(this.beat); this.unsub(); this.status = 'offline'; this.presence(); }
 }
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -251,7 +251,7 @@ function driver() {
     const info = () => ({ id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
     const avgRating = () => { const r = store.get('ratings', []); return r.length ? +(r.reduce((a, b) => a + b, 0) / r.length).toFixed(2) : 5.0; };
     const presence = () => { if (loc && (online || status === 'offline')) bus.publish('drivers/' + me.id, info()); };
-    every(presence, 3000);
+    every(presence, 5000);
     sub('offer/' + me.id, (m) => { if (status !== 'available' || offer) return bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id }); showOffer(m.trip); });
     const setLoc = (p) => {
       loc = p; meMk ? meMk.setLatLng(p) : (meMk = L.marker(p, { icon: carIcon(), zIndexOffset: 1000 }).addTo(layer));
@@ -316,7 +316,7 @@ function driver() {
     function onMove() {
       if (!rt || !loc || !$('#turn')) return;
       const pr = progress(rt, loc);
-      bus.publish('trip/' + trip.id, { type: 'loc', lat: loc.lat, lng: loc.lng, eta: pr.eta, remain: pr.remain });
+      if (Date.now() - (onMove.t || 0) > 1800) onMove.t = Date.now(), bus.publish('trip/' + trip.id, { type: 'loc', lat: loc.lat, lng: loc.lng, eta: pr.eta, remain: pr.remain });
       $('#turn').textContent = (pr.remain < 40 ? '🏁 ' : '➜ ') + (pr.remain < 40 ? 'You have arrived' : pr.next.text);
       $('#tdist').textContent = pr.remain < 40 ? '' : 'in ' + fmtDist(pr.toNext);
       $('#rem').textContent = `${fmtDist(pr.remain)} · ${fmtMin(pr.eta)} remaining`;
