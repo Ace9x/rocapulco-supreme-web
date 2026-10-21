@@ -81,3 +81,15 @@ test('schedule states', () => {
   assert.equal(scheduleState({ pickupAt: T, now: T + 16 * 60e3, matched: false }), 'expired');
 });
 test('eta smoothing', () => { assert.equal(smooth(null, 100), 100); assert.ok(smooth(100, 200) > 100 && smooth(100, 200) < 200); });
+
+import { anonymize, popularPickups, busyHour } from '../learn.js';
+test('learn: anonymizes, suggests popular pickups, predicts busy-hour wait', () => {
+  const at = Date.now();
+  const row = anonymize({ pickup: { lat: 40.605432, lng: -73.755111, label: '1012 Beach 20th St, Far Rockaway' }, dest: { label: 'JFK Airport, Queens' }, waitSec: 240, rideSec: 900, at });
+  assert.equal(row.pu.lat, 40.605); assert.equal(row.puName, 'Beach 20th St'); assert.ok(!JSON.stringify(row).includes('1012'));
+  const data = [1, 2, 3].map(i => ({ ...row, wait: 200 + i * 20 }));
+  assert.equal(popularPickups({ lat: 40.6, lng: -73.75 }, { data })[0].count, 3);
+  assert.equal(popularPickups({ lat: 40.75, lng: -73.99 }, { data }).length, 0); // far away
+  assert.equal(busyHour({ at, data }).avgWaitSec, 240);
+  assert.equal(busyHour({ at, data: data.slice(0, 2) }), null);
+});
