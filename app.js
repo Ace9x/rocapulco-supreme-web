@@ -12,7 +12,7 @@ const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('q
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtMin = (s) => Math.max(1, Math.round(s / 60)) + ' min';
 const fmtDist = (m) => m < 160 ? Math.round(m * 3.281 / 10) * 10 + ' ft' : (m / 1609.344).toFixed(1) + ' mi';
-const QUEENS = { lat: 40.7282, lng: -73.7949 };
+const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
 const bus = new Bus({ mode: ['local', 'mqtt'].includes(Q.get('transport')) ? Q.get('transport') : 'nostr', ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
 
@@ -93,7 +93,7 @@ class SimDriver {
     bus.publish('trip/' + trip.id, { type: 'arrived', driver: this.id }); await wait(3000);
     bus.publish('trip/' + trip.id, { type: 'start', driver: this.id });
     const rt = await route(trip.pickup, trip.dest); await this.drive(rt, trip);
-    const f = estimateFare({ meters: rt.distance, seconds: rt.duration });
+    const f = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: trip.dest.label });
     bus.publish('trip/' + trip.id, { type: 'complete', driver: this.id, fare: f.total, meters: rt.distance, seconds: rt.duration });
     this.status = 'available';
   }
@@ -118,7 +118,7 @@ function every(fn, ms) { const h = setInterval(fn, ms); cleanup.push(() => clear
 const tabs = (cur) => `<nav class="tabs">${['rider', 'driver', 'admin'].map(t => `<a href="#/${t}" class="${t === cur ? 'on' : ''}">${{ rider: 'Ride', driver: 'Drive', admin: 'Dispatch' }[t]}</a>`).join('')}</nav>`;
 
 function home() {
-  sheet.innerHTML = `<h1>Queens Cab</h1><p class="muted">Book a ride or drive in NYC. Live map, real routes, NYC TLC-style fare estimates.</p>
+  sheet.innerHTML = `<h1>Rocapulco Supreme</h1><p class="muted">Premium car service for Far Rockaway & all of NYC. Live map, real routes, upfront fares, airport flat rates (JFK $45 · LGA $55).</p>
   <a class="btn big" href="#/rider" id="go-rider">🧍 I need a ride</a><a class="btn big alt" href="#/driver" id="go-driver">🚕 I'm a driver</a><a class="btn link" href="#/admin">Dispatcher view</a>
   <p class="fine">Payments are not processed in the app — pay your driver directly. Channel: <b>${esc(NS)}</b></p>`;
 }
@@ -183,12 +183,12 @@ function rider() {
     async function estimate() {
       if (!pickup || !dest) return;
       $('#est').innerHTML = '<p class="muted">Calculating route…</p>';
-      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration });
+      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label });
       line?.remove(); line = L.polyline(rt.latlngs, { color: '#111', weight: 5 }).addTo(layer); map.fitBounds(line.getBounds(), { padding: [40, 40], paddingBottomRight: [20, 320] });
       const near = rankDrivers([...drivers.values()], pickup)[0];
       if (!$('#est')) return;
-      $('#est').innerHTML = `<div class="card fare"><div><b>Queens Cab</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)}${rt.real ? '' : ' (approx.)'}${near ? ' · nearest car ' + fmtDist(near.dist) : ''}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>
-      <p class="fine">Estimate ${money(fare.low)}–${money(fare.high)} modeled on NYC TLC meter rates incl. surcharges; tolls & tip extra. <b>Pay driver directly (cash/card)</b> — no payment is taken here.</p>`;
+      $('#est').innerHTML = `<div class="card fare"><div><b>Rocapulco Supreme</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)}${rt.real ? '' : ' (approx.)'}${near ? ' · nearest car ' + fmtDist(near.dist) : ''}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>${fare.flat ? '<p class="demo">✈️ Airport flat rate</p>' : ''}
+      <p class="fine">Estimate ${money(fare.low)}–${money(fare.high)} (${fare.flat ? 'airport flat rate' : '$5 base + $2.50/mi + $0.40/min'}); tolls & tip extra. <b>Pay driver directly (cash/card)</b> — no payment is taken here.</p>`;
       $('#req').disabled = false;
     }
     async function request() {
@@ -229,7 +229,7 @@ function rider() {
       const rec = { id: trip.id, date: new Date().toISOString(), from: pickup.label, to: dest.label, fare: m.fare, miles: +(m.meters / 1609.344).toFixed(2), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate };
       const h = store.get('history_rider', []); h.unshift(rec); store.set('history_rider', h.slice(0, 100));
       sheet.innerHTML = `<h2 id="done">You've arrived 🎉</h2><div class="card rcpt"><div class="row"><span>Fare</span><b id="rfare">${money(m.fare)}</b></div><div class="row"><span>Distance</span><span>${rec.miles} mi</span></div><div class="row"><span>Driver</span><span>${esc(rec.driver)} · ${esc(rec.plate)}</span></div><div class="row"><span>From</span><span>${esc(rec.from)}</span></div><div class="row"><span>To</span><span>${esc(rec.to)}</span></div></div>
-      <p class="fine"><b>Pay ${money(m.fare)} directly to your driver</b> (cash or their card reader). Queens Cab does not process payments.</p>
+      <p class="fine"><b>Pay ${money(m.fare)} directly to your driver</b> (cash or their card reader). Rocapulco Supreme does not process payments.</p>
       <p>Rate your ride</p><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}">★</button>`).join('')}</div><button class="btn" id="fin">Done</button>`;
       sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + trip.id, { type: 'rate', stars: s, driver: trip.driver.id }); rec.stars = s; store.set('history_rider', [rec, ...store.get('history_rider', []).slice(1)]); });
       $('#fin').onclick = () => { carMk?.remove(); line?.remove(); pinD?.remove(); pinD = line = null; dest = null; trip = null; plan(); };
@@ -330,11 +330,11 @@ function driver() {
       $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); endTrip(); idle(); };
     }
     function complete() {
-      const f = estimateFare({ meters: rt.distance, seconds: rt.duration });
+      const f = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: trip.dest.label });
       bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, meters: rt.distance, seconds: rt.duration });
       const h = store.get('history_driver', []); h.unshift({ id: trip.id, date: new Date().toISOString(), fare: f.total, to: trip.dest.label, rider: trip.rider.name }); store.set('history_driver', h.slice(0, 500));
       speak('Trip complete. Collect ' + f.total.toFixed(2) + ' dollars.');
-      sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect from rider</div><div class="price">${money(f.total)}</div></div><p class="fine">Collect payment directly (cash or your card reader). Tolls extra. Estimate based on NYC TLC rate structure.</p><button class="btn" id="bk">Back online</button>`;
+      sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect from rider</div><div class="price">${money(f.total)}</div></div><p class="fine">Collect payment directly (cash or your card reader). Tolls extra. Rocapulco Supreme rates.</p><button class="btn" id="bk">Back online</button>`;
       endTrip(); $('#bk').onclick = idle;
     }
     function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(); }

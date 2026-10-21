@@ -1,12 +1,14 @@
 import test from 'node:test'; import assert from 'node:assert/strict';
 import { estimateFare } from '../fare.js';
 import { rankDrivers, transition, haversine, cumulative, pointAlong, nearestIndex, instruction } from '../dispatch.js';
-test('minimum fare applies to tiny trips', () => assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 9.5));
+test('minimum fare applies to tiny trips', () => assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 8));
+test('matches original fare.ts: 5mi/15min = $5+$12.50+$6 = $23.50', () => assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900 }).total, 23.5));
+test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 45); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 55); });
 test('fare grows with distance and time', () => {
   const a = estimateFare({ meters: 5000, seconds: 900 }), b = estimateFare({ meters: 10000, seconds: 1500 });
   assert.ok(b.total > a.total); assert.ok(a.low < a.total && a.high > a.total);
 });
-test('JFK-ish 15mi trip in plausible NYC range', () => { const f = estimateFare({ meters: 24140, seconds: 2400 }).total; assert.ok(f > 45 && f < 90, f); });
+
 test('surge multiplies meter', () => assert.ok(estimateFare({ meters: 8000, seconds: 900, surge: 1.5 }).total > estimateFare({ meters: 8000, seconds: 900 }).total));
 test('rejects bad input', () => assert.throws(() => estimateFare({ meters: -1, seconds: 1 })));
 test('haversine ~1.11km per 0.01 lat', () => assert.ok(Math.abs(haversine({ lat: 40.7, lng: -73.8 }, { lat: 40.71, lng: -73.8 }) - 1112) < 5));

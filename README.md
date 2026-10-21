@@ -1,8 +1,10 @@
-# 🚕 Queens Cab
+# 🚕 Rocapulco Supreme — web app
+
+The browser/PWA rebuild of [Ace9x/rocapulco-supreme](https://github.com/Ace9x/rocapulco-supreme) (Fan's Expo + Supabase ride-hailing app for Far Rockaway). Same vision — phone sign-up, rider GPS pickup, dispatcher, driver status flow en route → arrived → on trip → completed, cash on completion, $5 + $2.50/mi + $0.40/min with JFK $45 / LGA $55 flat rates — but it runs in any browser with no app store, no Supabase project and no Twilio account.
 
 A phone-first, installable (PWA) taxi app for NYC with **rider**, **driver** and **dispatcher** views — live in your browser, no install or account required.
 
-**Live:** https://ace9x.github.io/queens-cab/
+**Live:** https://ace9x.github.io/rocapulco-supreme-web/
 
 ## What works
 **Rider** — profile sign-up · pickup from live GPS (or search / long-press map) · destination search (or tap map) · real road route + fare estimate · request ride · automatic dispatch to the nearest online driver (15 s offer, then next driver) · driver card (name, car, plate, call) · live car on map with ETA · "driver arrived" alert · in-trip tracking · receipt · 1–5★ rating · trip history.
@@ -16,10 +18,10 @@ A phone-first, installable (PWA) taxi app for NYC with **rider**, **driver** and
 ## Try it on two phones
 1. Phone A: open the link → **I'm a driver** → sign up → **Go online** (allow location).
 2. Phone B: **I need a ride** → turn **Demo mode off** → pick a destination → **Request ride**.
-Use the same `?ns=yourname` on both links for a private channel, e.g. `https://ace9x.github.io/queens-cab/?ns=fan`.
+Use the same `?ns=yourname` on both links for a private channel, e.g. `https://ace9x.github.io/rocapulco-supreme-web/?ns=fan`.
 
 ## Fares & payments
-Estimates follow the NYC TLC yellow-cab meter structure ($3.00 base, $0.70 per ⅕ mile, $0.70/min slow traffic, $1.00 improvement + $0.50 MTA surcharges, tolls/tip extra) using real route distance/time. It is an **estimate, not a licensed meter**. **The app takes no payments — riders pay the driver directly (cash/card reader).**
+Fares use the original Rocapulco Supreme model (`fare.js`, ported from `packages/shared/src/fare.ts`): $5.00 base + $2.50/mile + $0.40/minute, $8 minimum, flat $45 to JFK and $55 to LaGuardia, computed from the real road route. Tolls/tip extra. Upfront estimate, not a licensed meter. **The app takes no payments — riders pay the driver directly (cash/card reader).**
 
 ## How it works
 Static site (GitHub Pages) + real-time messaging as signed *ephemeral* events (relayed live, never stored) over public **Nostr relays on port 443** (nos.lol, relay.primal.net, nostr.mom — sent to all three, de-duplicated). `?transport=mqtt` switches to public MQTT brokers; `?transport=local` uses BroadcastChannel (same browser, for tests). Maps: © OpenStreetMap contributors (Leaflet). Routing: OSRM demo server. Geocoding: Photon (Komoot). No accounts or API keys needed.
@@ -35,7 +37,7 @@ Static site (GitHub Pages) + real-time messaging as signed *ephemeral* events (r
 ```
 npm test                 # unit tests (fare, dispatch, state machine, geometry)
 npm run serve & npx playwright test                       # E2E, local transport
-BASE=https://ace9x.github.io/queens-cab/ TRANSPORT=nostr npx playwright test   # E2E against live site + broker
+BASE=https://ace9x.github.io/rocapulco-supreme-web/ TRANSPORT=nostr npx playwright test   # E2E against live site + broker
 ```
 
 ## Honest limitations
