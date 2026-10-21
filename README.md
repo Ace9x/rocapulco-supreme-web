@@ -36,7 +36,7 @@ All app code goes through one interface in `data.js` (`publish(topic,msg)` / `su
 Use the same `?ns=yourname` on both links for a private channel, e.g. `https://ace9x.github.io/rocapulco-supreme-web/?ns=fan`.
 
 ## Fares & payments
-Fares use the original Rocapulco Supreme model (`fare.js`, ported from `packages/shared/src/fare.ts`): $5.00 base + $2.50/mile + $0.40/minute, $8 minimum, flat $45 to JFK and $55 to LaGuardia, computed from the real road route. Tolls/tip extra. The upfront fare is locked at booking. It is not a licensed meter. **The app takes no payments — riders pay the driver directly (cash/card reader).**
+Fares (`fare.js`, enforced again on the server by `taxi_fare()`): **Black Sedan** $3.50 base + $2.50/mile + $0.40/minute, $10 local minimum, flat JFK $75 / LaGuardia $82.50. **Black SUV** is 1.5× every Sedan rule ($15 minimum, JFK $112.50, LGA $123.75). No surge, ever. Drivers keep 70%.
 
 ## How it works
 Static site (GitHub Pages) + real-time messaging as signed *ephemeral* events (relayed live, never stored) over public **Nostr relays on port 443** (nos.lol, relay.primal.net, nostr.mom — sent to all three, de-duplicated). `?transport=mqtt` switches to public MQTT brokers; `?transport=local` uses BroadcastChannel (same browser, for tests). Maps: © OpenStreetMap contributors (Leaflet). Routing: OSRM demo server. Geocoding: Photon (Komoot). No accounts or API keys needed.

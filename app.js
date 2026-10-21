@@ -167,7 +167,7 @@ const POLICY = 'No surge, ever. No booking or service fees. If a driver cancels,
 const tabs = (cur) => `<nav class="tabs">${['rider', 'driver', 'admin'].map(t => `<a href="#/${t}" class="${t === cur ? 'on' : ''}">${ic({ rider: 'car', driver: 'route', admin: 'dispatch' }[t])}${{ rider: 'Ride', driver: 'Drive', admin: 'Dispatch' }[t]}</a>`).join('')}</nav>`;
 
 const ONB = [
-  ['shield', 'Upfront fares, no surge — ever', '$3.50 + $2.50/mi + $0.40/min, $8 minimum. JFK $50, LGA $55 flat. Same price at 3 AM or in the rain.'],
+  ['shield', 'Upfront fares, no surge — ever', '$3.50 + $2.50/mi + $0.40/min, $10 minimum. JFK $75, LGA $82.50 flat (Black SUV 1.5×). Same price at 3 AM or in the rain.'],
   ['pin', 'Set pickup, pick a car, go', 'Drag the gold pin to your exact door, choose Sedan or SUV and see the price before you book.'],
   ['wallet', 'Pay your driver your way', 'Cash, card, Zelle or Venmo, straight to the driver. A real dispatcher answers at ' + DISPATCH_PHONE + '.'],
 ];
@@ -182,11 +182,11 @@ function onboarding() {
 }
 function home() {
   sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>Rocapulco <span>Supreme</span></h1><p class="muted">Black-car luxury for Far Rockaway & all of NYC. Real human dispatch, upfront fares, <b>no surge, ever</b>.</p></div>
-  <div class="rates"><div><b>$3.50</b><span>base</span></div><div><b>$2.50</b><span>/mile</span></div><div><b>$0.40</b><span>/min</span></div><div><b>$50</b><span>JFK flat</span></div><div><b>$55</b><span>LGA flat</span></div></div>
+  <div class="rates"><div><b>$3.50</b><span>base</span></div><div><b>$2.50</b><span>/mile</span></div><div><b>$0.40</b><span>/min</span></div><div><b>$75</b><span>JFK flat</span></div><div><b>$82.50</b><span>LGA flat</span></div></div><p class="fine">Black Sedan rates shown. Black SUV is 1.5×: $15 minimum, JFK $112.50, LGA $123.75.</p>
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
   <div class="two eq"><a class="btn alt" href="#/driver" id="go-driver">${ic('route')}Drive</a><a class="btn alt" href="#/admin">${ic('dispatch')}Dispatch</a></div>
   ${callBtn()}
-  <p class="fine">$8 minimum. Pay your driver directly: cash, card, Zelle or Venmo — the app never charges you. ${POLICY} Channel: <b>${esc(NS)}</b></p>`;
+  <p class="fine">$10 minimum ($15 SUV). Pay your driver directly: cash, card, Zelle or Venmo — the app never charges you. ${POLICY} Channel: <b>${esc(NS)}</b></p>`;
   onboarding();
 }
 
@@ -273,8 +273,8 @@ function rider() {
     }
     function renderClasses() {
       const box = $('#vc'); if (!box) return;
-      box.innerHTML = Object.entries(VCLASS).map(([k, v]) => { const e = classEta(k); return `<button class="ds-option" role="radio" aria-checked="${k === vcls}" data-v="${k}">${ic(v.icon, 'lg')}<div class="grow"><b>${v.name}</b> <span class="muted">${ic('user', 'sm')}${v.seats}</span><div class="muted">${e != null ? fmtMin(e) + ' away' : 'Checking cars…'}</div></div><div class="vp">${fare ? money(fare.total) : '—'}</div></button>`; }).join('') + '<p class="fine">Same upfront fare for both — no upcharge, no surge.</p>';
-      box.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { vcls = b.dataset.v; store.set('vclass', vcls); renderClasses(); });
+      box.innerHTML = Object.entries(VCLASS).map(([k, v]) => { const e = classEta(k); return `<button class="ds-option" role="radio" aria-checked="${k === vcls}" data-v="${k}">${ic(v.icon, 'lg')}<div class="grow"><b>${v.name}</b> <span class="muted">${ic('user', 'sm')}${v.seats}</span><div class="muted">${e != null ? fmtMin(e) + ' away' : 'Checking cars…'}</div></div><div class="vp">${rt && dest ? money(estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: k }).total) : '—'}</div></button>`; }).join('') + '<p class="fine">Black SUV is 1.5× the Sedan fare. Upfront price, never any surge.</p>';
+      box.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { vcls = b.dataset.v; store.set('vclass', vcls); if (rt && dest) estimate(); else renderClasses(); });
     }
     every(() => { if (!trip) renderClasses(); }, 4000);
     function wallet() {
@@ -314,7 +314,7 @@ function rider() {
     async function estimate() {
       if (!pickup || !dest || !$('#est')) return;
       $('#est').innerHTML = '<p class="muted">Calculating route…</p>';
-      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label });
+      rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: vcls });
       line?.remove(); line = L.polyline(rt.latlngs, { color: '#111', weight: 5 }).addTo(layer); map.fitBounds(line.getBounds(), { padding: [40, 40], paddingBottomRight: [20, 320] });
       if (!$('#est')) return;
       const n = rankDrivers([...drivers.values()], pickup).length;
@@ -326,7 +326,7 @@ function rider() {
     }
     // ---- dispatch: rank by road ETA (OSRM table), one offer at a time, 15 s each, auto-reassign ----
     async function startRequest(sched) {
-      if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label }); }
+      if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: vcls }); }
       if (sched) { sched.started = true; store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== sched.id)); }
       trip = { vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
       sub('trip/' + trip.id, onTrip);
@@ -554,7 +554,7 @@ function admin() {
   const drivers = new Map(), mk = new Map(), trips = new Map(), reports = [];
   sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2><div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
   <div class="grid"><div class="card stat"><span>Fares today</span><b id="nf">$0.00</b></div><div class="card stat"><span>Rocapulco 30%</span><b id="nc">$0.00</b></div></div>
-  <p class="nosurge">${ic('shield')} No surge, ever. Pricing is fixed: $3.50 + $2.50/mi + $0.40/min · JFK $50 · LGA $55.</p>
+  <p class="nosurge">${ic('shield')} No surge, ever. Pricing is fixed: Sedan $3.50 + $2.50/mi + $0.40/min, $10 min · JFK $75 · LGA $82.50 · Black SUV 1.5× ($15 min, JFK $112.50, LGA $123.75).</p>
   <h3>Needs a driver</h3><div id="open"></div><div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0;

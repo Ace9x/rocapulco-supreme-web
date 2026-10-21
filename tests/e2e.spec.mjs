@@ -13,7 +13,7 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   for (const p of [d, r]) p.on('pageerror', e => console.log('PAGEERROR', e.message));
   const h = await ctx.newPage(); await h.goto(url('#/'));
   await expect(h.locator('#hcall')).toHaveAttribute('href', 'tel:+17184747100'); await expect(h.locator('#sheet')).toContainText('No surge, ever');
-  await expect(h.locator('.rates')).toContainText('$3.50'); await expect(h.locator('.rates')).toContainText('$50');
+  await expect(h.locator('.rates')).toContainText('$3.50'); await expect(h.locator('.rates')).toContainText('$75'); await expect(h.locator('.rates')).toContainText('$82.50');
   await h.waitForTimeout(1500); await h.screenshot({ path: SHOTS + '00-home-black-gold.png' }); await h.close();
   await d.goto(url('#/driver'));
   await d.fill('input[name=name]', 'Test Driver'); await d.fill('input[name=phone]', '7185550100');
@@ -135,7 +135,7 @@ test('scheduled ride: saved, alert when dispatch opens, demo driver confirms', a
   await r.fill('input[name=name]', 'Sched Rider'); await r.fill('input[name=phone]', '1'); await r.click('text=Continue');
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'JFK Airport Terminal 4'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
-  await expect(r.locator('#fare')).toHaveText('$50.00', { timeout: 20000 });
+  await expect(r.locator('#fare')).toHaveText('$75.00', { timeout: 20000 });
   await r.click('#wsch');
   const at = await r.evaluate(() => { const d = new Date(Date.now() + 7 * 60e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   await r.fill('#when', at); await r.screenshot({ path: SHOTS + '18-rider-schedule.png' });

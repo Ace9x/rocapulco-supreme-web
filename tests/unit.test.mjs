@@ -1,9 +1,9 @@
 import test from 'node:test'; import assert from 'node:assert/strict';
 import { estimateFare } from '../fare.js';
 import { rankDrivers, transition, haversine, cumulative, pointAlong, nearestIndex, instruction } from '../dispatch.js';
-test('minimum fare applies to tiny trips', () => assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 8));
+test('minimum fare applies to tiny trips', () => assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 10));
 test('Rocapulco spec: 5mi/15min = $3.50+$12.50+$6 = $22.00', () => assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900 }).total, 22));
-test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 50); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 55); });
+test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 75); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 82.5); });
 test('fare grows with distance and time', () => {
   const a = estimateFare({ meters: 5000, seconds: 900 }), b = estimateFare({ meters: 10000, seconds: 1500 });
   assert.ok(b.total > a.total); assert.ok(a.low < a.total && a.high > a.total);
@@ -51,7 +51,7 @@ test('surge is always 1', () => { assert.equal(estimateFare({ meters: 8000, seco
 test('70/30 split adds up', () => { for (const f of [8, 22, 50, 55, 33.33]) { const x = split(f); assert.equal(Math.round((x.driver + x.company) * 100) / 100, f); } assert.equal(split(50).driver, 35); assert.equal(split(50).company, 15); });
 test('six popular Far Rockaway destinations incl JFK/LGA flat rates', () => { assert.equal(POPULAR.length, 6); assert.equal(matchFlatRate(POPULAR[0].label), 'jfk'); assert.equal(matchFlatRate(POPULAR[1].label), 'laguardia'); });
 test('dispatch number and payments', () => { assert.equal(DISPATCH_TEL, '+17184747100'); assert.deepEqual(Object.keys(PAYMENTS), ['cash', 'card', 'zelle', 'venmo']); });
-test('surge never applies to airport flat rates', () => assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK', surge: 1.5 }).total, 50));
+test('surge never applies to airport flat rates', () => assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK', surge: 1.5 }).total, 75));
 test('offer economics $/mi', () => { const e = offerEconomics({ fare: 20, tripMeters: 1609.344 * 4, pickupMeters: 1609.344 }); assert.equal(e.perTripMile, 5); assert.equal(e.perTotalMile, 4); assert.equal(e.driverTake, 14); });
 test('heading-home filter', () => {
   const home = { lat: 40.60, lng: -73.75 }, driver = { lat: 40.70, lng: -73.80 };
@@ -93,3 +93,12 @@ test('learn: anonymizes, suggests popular pickups, predicts busy-hour wait', () 
   assert.equal(busyHour({ at, data }).avgWaitSec, 240);
   assert.equal(busyHour({ at, data: data.slice(0, 2) }), null);
 });
+
+// Black SUV = 1.5x every Sedan rule
+import { ratesFor, split as splitF } from '../fare.js';
+test('SUV metered fare is 1.5x Sedan: 5mi/15min = $33.00', () => { assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900, vclass: 'suv' }).total, 33); assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900, vclass: 'sedan' }).total, 22); });
+test('SUV minimum $15, Sedan minimum $10', () => { assert.equal(estimateFare({ meters: 100, seconds: 30, vclass: 'suv' }).total, 15); assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 10); });
+test('SUV airport flats: JFK $112.50, LGA $123.75', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4', vclass: 'suv' }).total, 112.5); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport', vclass: 'suv' }).total, 123.75); });
+test('SUV breakdown lines sum to total and show SUV rates', () => { const f = estimateFare({ meters: 12345, seconds: 1234, vclass: 'suv' }); assert.equal(Math.round(f.lines.reduce((a, l) => a + l[1], 0) * 100) / 100, f.total); assert.ok(f.lines.some(l => /\$3\.75/.test(l[0]))); assert.equal(ratesFor('suv').base, 5.25); });
+test('driver earnings 70/30 on SUV airport fare', () => { const s = splitF(112.5); assert.equal(s.driver, 78.75); assert.equal(s.company, 33.75); });
+test('unknown class falls back to Sedan pricing', () => assert.equal(estimateFare({ meters: 100, seconds: 30, vclass: 'limo' }).total, 10));

@@ -6,9 +6,13 @@ const users = JSON.parse(fs.readFileSync(process.env.RR_TEST_USERS || '/workspac
 let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
 const G = createClient(U, K, { realtime: { transport: WebSocket }, auth: { persistSession: false } });
 const PH = '+1555' + String(Math.floor(Math.random() * 1e7)).padStart(7, '0');
-const book = async (x) => (await G.rpc('book_ride', { p: { ext_id: 't-e2e-' + crypto.randomUUID(), rider_name: 'E2E Test Rider', rider_phone: PH, pickup_address: 'Beach 20th St, Far Rockaway', dropoff_address: x.to, est_miles: x.mi, est_minutes: x.min, flat_rate: x.flat, payment_method: 'venmo' } }));
+const book = async (x) => (await G.rpc('book_ride', { p: { ext_id: 't-e2e-' + crypto.randomUUID(), rider_name: 'E2E Test Rider', rider_phone: PH.slice(0, -2) + String(Math.floor(Math.random() * 100)).padStart(2, '0'), pickup_address: 'Beach 20th St, Far Rockaway', dropoff_address: x.to, est_miles: x.mi, est_minutes: x.min, flat_rate: x.flat, vehicle_class: x.cls, payment_method: 'venmo' } }));
 const a = await book({ to: 'Jamaica Center', mi: 6, min: 20 }), j = await book({ to: 'JFK Terminal 4', mi: 9, min: 25, flat: 'JFK' }), l = await book({ to: 'LaGuardia', mi: 15, min: 35, flat: 'LGA' });
-ok(!a.error && Number(a.data[0].fare_estimate) === 26.5, 'guest booking, metered fare $26.50'); ok(Number(j.data[0].fare_estimate) === 50 && Number(l.data[0].fare_estimate) === 55, 'JFK $50 / LGA $55 flat');
+ok(!a.error && Number(a.data[0].fare_estimate) === 26.5, 'guest booking, metered fare $26.50'); ok(Number(j.data[0].fare_estimate) === 75 && Number(l.data[0].fare_estimate) === 82.5, 'Sedan JFK $75 / LGA $82.50 flat');
+const sv = await Promise.all([book({ to: 'Jamaica Center', mi: 6, min: 20, cls: 'suv' }), book({ to: 'JFK', mi: 9, min: 25, flat: 'JFK', cls: 'suv' }), book({ to: 'LGA', mi: 15, min: 35, flat: 'LGA', cls: 'suv' }), book({ to: 'corner', mi: 0.3, min: 2, cls: 'suv' }), book({ to: 'corner', mi: 0.3, min: 2 })]);
+const fe = sv.map(x => Number(x.data?.[0]?.fare_estimate)); ok(fe.join() === '39.75,112.5,123.75,15,10', 'server SUV fares 1.5x (metered $39.75, JFK $112.50, LGA $123.75, min $15; Sedan min $10): ' + fe.join());
+const rs = await G.from('ride_stats').insert({ pu_lat: 40.6, pu_lng: -73.75, pu_name: 'E2E', do_name: 'E2E', dow: 3, hour: 18, wait_sec: 240, ride_sec: 900 }); ok(!rs.error, 'ride_stats: anon insert');
+const rr = await G.from('ride_stats').select('id'); ok((rr.data || []).length === 0, 'ride_stats: anon cannot read');
 const { data: peek } = await G.from('taxi_bookings').select('id'); ok(peek.length === 0, 'guests cannot list bookings');
 const st = (await G.rpc('ride_status', { p_id: a.data[0].id, p_token: a.data[0].token })).data[0]; ok(st.status === 'requested', 'rider can check own status with token');
 ok((await G.rpc('rider_cancel', { p_id: l.data[0].id, p_token: crypto.randomUUID() })).data == null, 'wrong token cannot cancel');
@@ -26,4 +30,4 @@ await p.fill(card + ' [data-dn]', 'Test Driver'); await p.click(card + ' [data-a
 for (const s of ['en_route', 'arrived', 'in_progress', 'completed']) { await p.click(card + ' [data-nx]'); await p.waitForSelector(card + ` [data-st="${s}"]`, { timeout: 15000 }); }
 ok((await G.rpc('ride_status', { p_id: a.data[0].id, p_token: a.data[0].token })).data[0].status === 'completed', 'rider sees completed'); await p.screenshot({ path: '/workspace/queens-cab-shots-supabase.png', fullPage: true });
 const nb = await book({ to: 'Rockaway Beach', mi: 2, min: 8 }); ok(await p.waitForSelector(`[data-sb="${nb.data[0].id}"]`, { timeout: 15000 }).then(() => true).catch(() => false), 'new booking appears live (realtime)');
-await b.close(); console.log(fails ? fails + ' FAILED' : 'ALL PASS'); fs.writeFileSync('/tmp/qc-e2e-ids.json', JSON.stringify([a, j, l, nb].map(x => x.data[0].id))); process.exit(fails ? 1 : 0);
+await b.close(); console.log(fails ? fails + ' FAILED' : 'ALL PASS'); fs.writeFileSync('/tmp/qc-e2e-ids.json', JSON.stringify([a, j, l, nb, ...sv].map(x => x.data[0].id))); process.exit(fails ? 1 : 0);
