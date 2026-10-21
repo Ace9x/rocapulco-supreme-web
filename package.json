@@ -1,0 +1,20 @@
+{
+  "name": "queens-cab",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test tests/unit.test.mjs",
+    "test:e2e": "playwright test",
+    "serve": "python3 -m http.server 8099"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}
