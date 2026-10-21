@@ -1,6 +1,8 @@
 import { estimateFare, money, offerEconomics, split, DRIVER_SHARE, DISPATCH_PHONE, DISPATCH_TEL, PAYMENTS, POPULAR } from './fare.js';
 import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction, rankByRoad, homeFilterOk, cancelStatus, noShowAllowed, scheduleState, smooth } from './dispatch.js';
 import { createBus } from './data.js';
+import { ic } from './icons.js';
+import * as learn from './learn.js';
 
 const Q = new URLSearchParams(location.search);
 const NS = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
@@ -17,7 +19,7 @@ const NOSHOW_GRACE = Q.get('testfast') ? 3 : 300;            // seconds after pr
 const NOSHOW_SCALE = Q.get('testfast') ? 0 : 1;
 const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
-const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? '● Live' : s === 'local' ? '● Local' : '○ ' + s; $('#net').className = 'net ' + s; } });
+const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? 'Live' : s === 'local' ? 'Local' : s; $('#net').className = 'net ' + s; } });
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
@@ -102,7 +104,7 @@ function notify(text) {
 // In-trip chat between rider and driver over the trip channel.
 function chatBox(box, btn, tripId, role) {
   const msgs = []; let open = false;
-  const render = () => { if (!open) { btn.textContent = msgs.filter(m => m.from !== role).length ? `💬 Message (${msgs.filter(m => m.from !== role).length})` : '💬 Message'; return; }
+  const render = () => { if (!open) { btn.textContent = msgs.filter(m => m.from !== role).length ? `Message (${msgs.filter(m => m.from !== role).length})` : 'Message'; btn.insertAdjacentHTML('afterbegin', ic('chat')); return; }
     box.innerHTML = `<div class="chat"><div class="msgs" id="msgs">${msgs.map(m => `<div class="msg ${m.from === role ? 'me' : ''}">${esc(m.text)}</div>`).join('') || '<p class="fine">Messages go only to this trip.</p>'}</div><form id="cf"><input id="ci" placeholder="Type a message" maxlength="200" autocomplete="off"><button class="btn sm">Send</button></form></div>`;
     $('#cf').onsubmit = (e) => { e.preventDefault(); const v = $('#ci').value.trim(); if (!v) return; bus.publish('trip/' + tripId, { type: 'chat', from: role, text: v, id: uid() }); $('#ci').value = ''; };
     const ms = $('#msgs'); ms.scrollTop = ms.scrollHeight; };
@@ -154,18 +156,38 @@ let cleanup = [];
 function reset() { cleanup.forEach(f => f()); cleanup = []; layer.clearLayers(); }
 const sub = (p, cb) => cleanup.push(bus.subscribe(p, cb));
 function every(fn, ms) { const h = setInterval(fn, ms); cleanup.push(() => clearInterval(h)); }
-const callBtn = (label = `📞 Call dispatch ${DISPATCH_PHONE}`) => `<a class="btn gold call" href="tel:${DISPATCH_TEL}">${label}</a>`;
+const callBtn = (label = `Call dispatch ${DISPATCH_PHONE}`) => `<a class="btn alt call" href="tel:${DISPATCH_TEL}">${ic('phone')}${label}</a>`;
 const PAY_NOTE = { cash: 'Hand cash to your driver.', card: "Pay on your driver's card reader in the car.", zelle: "Send by Zelle to the driver's number shown at drop-off.", venmo: 'Send by Venmo to your driver at drop-off.' };
 const payLink = (m, amt) => m === 'venmo' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://venmo.com/?txn=pay&amount=${amt.toFixed(2)}&note=Rocapulco%20ride">Open Venmo</a>` : m === 'zelle' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://www.zellepay.com/">Open Zelle (use your bank app)</a>` : '';
+const initials = (n = '') => n.replace(/\(.*?\)/g, '').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'R';
+const RATE_TAGS = ['Clean car', 'Safe driving', 'On time', 'Friendly', 'Knew the route'];
+const VCLASS = { sedan: { name: 'Black Sedan', seats: 4, icon: 'car', test: () => true }, suv: { name: 'Black SUV', seats: 6, icon: 'suv', test: (d) => /escalade|suburban|xt6|tahoe|yukon|navigator|suv|van|sienna|odyssey/i.test(d.car || '') } };
+const PAY_IC = { cash: 'cash', card: 'card', zelle: 'bank', venmo: 'phone' };
 const POLICY = 'No surge, ever. No booking or service fees. If a driver cancels, you are never charged.';
-const tabs = (cur) => `<nav class="tabs">${['rider', 'driver', 'admin'].map(t => `<a href="#/${t}" class="${t === cur ? 'on' : ''}">${{ rider: 'Ride', driver: 'Drive', admin: 'Dispatch' }[t]}</a>`).join('')}</nav>`;
+const tabs = (cur) => `<nav class="tabs">${['rider', 'driver', 'admin'].map(t => `<a href="#/${t}" class="${t === cur ? 'on' : ''}">${ic({ rider: 'car', driver: 'route', admin: 'dispatch' }[t])}${{ rider: 'Ride', driver: 'Drive', admin: 'Dispatch' }[t]}</a>`).join('')}</nav>`;
 
+const ONB = [
+  ['shield', 'Upfront fares, no surge — ever', '$3.50 + $2.50/mi + $0.40/min, $8 minimum. JFK $50, LGA $55 flat. Same price at 3 AM or in the rain.'],
+  ['pin', 'Set pickup, pick a car, go', 'Drag the gold pin to your exact door, choose Sedan or SUV and see the price before you book.'],
+  ['wallet', 'Pay your driver your way', 'Cash, card, Zelle or Venmo, straight to the driver. A real dispatcher answers at ' + DISPATCH_PHONE + '.'],
+];
+function onboarding() {
+  if (store.get('onboarded') || document.getElementById('onb')) return;
+  let i = 0; const el = document.createElement('div'); el.id = 'onb'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Welcome'); document.body.appendChild(el);
+  const close = () => { store.set('onboarded', true); el.remove(); };
+  const draw = () => { const [icn, t, d] = ONB[i];
+    el.innerHTML = `<div class="onb-card"><button class="onb-skip" id="onbskip">Skip</button><div class="onb-ic">${ic(icn)}</div><h2>${t}</h2><p class="muted">${d}</p><div class="dots">${ONB.map((_, j) => `<i class="${j === i ? 'on' : ''}"></i>`).join('')}</div><button class="btn gold big" id="onbnext">${i < ONB.length - 1 ? 'Next' : 'Get started'}</button></div>`;
+    $('#onbskip').onclick = close; $('#onbnext').onclick = () => (++i < ONB.length ? draw() : close()); };
+  draw();
+}
 function home() {
   sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>Rocapulco <span>Supreme</span></h1><p class="muted">Black-car luxury for Far Rockaway & all of NYC. Real human dispatch, upfront fares, <b>no surge, ever</b>.</p></div>
   <div class="rates"><div><b>$3.50</b><span>base</span></div><div><b>$2.50</b><span>/mile</span></div><div><b>$0.40</b><span>/min</span></div><div><b>$50</b><span>JFK flat</span></div><div><b>$55</b><span>LGA flat</span></div></div>
-  <a class="btn big gold" href="#/rider" id="go-rider">Book a ride</a><a class="btn big alt" href="#/driver" id="go-driver">I'm a Rocapulco driver</a><a class="btn link" href="#/admin">Dispatch center</a>
+  <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
+  <div class="two eq"><a class="btn alt" href="#/driver" id="go-driver">${ic('route')}Drive</a><a class="btn alt" href="#/admin">${ic('dispatch')}Dispatch</a></div>
   ${callBtn()}
   <p class="fine">$8 minimum. Pay your driver directly: cash, card, Zelle or Venmo — the app never charges you. ${POLICY} Channel: <b>${esc(NS)}</b></p>`;
+  onboarding();
 }
 
 function profileForm(role, done) {
@@ -182,7 +204,7 @@ function profileForm(role, done) {
 function rider() {
   profileForm('rider', (me) => {
     const drivers = new Map(), dmk = new Map();
-    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true), payM = store.get('pay', 'cash');
+    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true), payM = store.get('pay', 'cash'), vcls = store.get('vclass', 'sedan');
     let pinP, pinD, line, carMk, tick;
     sub('drivers/+', (d) => {
       if (d.sim && d.owner !== me.id) return;
@@ -210,17 +232,26 @@ function rider() {
     function plan() {
       trip = null; clearInterval(tick); dmk.forEach(m => m.addTo(layer));
       const sched = store.get('scheduled', []);
-      sheet.innerHTML = `${tabs('rider')}<div class="hi">Hi ${esc(me.name.split(' ')[0])} 👋 <span><a href="#" id="hist">History</a></span></div>
-      <div class="field"><span class="dot a"></span><input id="pu" placeholder="Pickup — locating…"><button id="gps" title="Use my location">◎</button></div><ul id="pul" class="sugg"></ul>
-      <div class="pop" id="pop">${POPULAR.map((d, i) => `<button data-p="${i}">${esc(d.k)}</button>`).join('')}</div>
+      const pops = learn.popularPickups(pickup || QUEENS, { hour: new Date().getHours() }), bh = learn.busyHour();
+      sheet.innerHTML = `${tabs('rider')}<div class="hi"><span>Hi ${esc(me.name.split(' ')[0])}</span><span class="hl"><a href="#" id="wal">${ic('wallet')}Wallet</a><a href="#" id="hist">${ic('history')}History</a></span></div>
+      <h2 class="where">Where to?</h2>
+      <div class="routebox"><div class="rte"><span class="dot a"></span><span class="ln"></span><span class="dot b"></span></div><div class="grow">
+      <div class="field"><input id="pu" placeholder="Pickup — locating…" aria-label="Pickup"><button id="gps" title="Use my location" aria-label="Use my location">${ic('locate')}</button></div><ul id="pul" class="sugg"></ul>
+      <div class="field"><input id="de" placeholder="Where to?" aria-label="Destination"></div><ul id="del" class="sugg"></ul></div></div>
+      ${pops.length ? `<div class="lbl">${ic('spark')}Popular pickups near you</div><div class="pop" id="pps">${pops.map((d, i) => `<button class="ds-chip" data-pp="${i}">${ic('pin')}${esc(d.label)}</button>`).join('')}</div>` : ''}
+      <div class="lbl">${ic('flag')}Popular destinations</div><div class="pop" id="pop">${POPULAR.map((d, i) => `<button class="ds-chip" data-p="${i}">${esc(d.k)}</button>`).join('')}</div>
       <input id="note" placeholder="Note for driver (e.g. blue door, by the bodega)" maxlength="120" value="${esc(pickup?.note || '')}">
-      <div class="field"><span class="dot b"></span><input id="de" placeholder="Where to?"></div><ul id="del" class="sugg"></ul>
-      <p class="fine">Drag the green <b>A</b> pin to your exact spot. Tap the map to set the destination.</p>
-      <div class="seg"><button id="wnow" class="on">Now</button><button id="wsch">Schedule</button></div><input id="when" type="datetime-local" hidden>
-      <div class="paysel"><span class="fine">Pay driver with</span><div class="seg" id="pay">${Object.entries(PAYMENTS).map(([k, v]) => `<button data-m="${k}" class="${k === payM ? 'on' : ''}">${v}</button>`).join('')}</div></div>
+      <p class="fine">Drag the gold <b>A</b> pin to your exact spot. Tap the map to set the destination.</p>
+      <div class="seg"><button id="wnow" class="on">${ic('clock')}Now</button><button id="wsch">Schedule</button></div><input id="when" type="datetime-local" hidden>
+      <div id="vc" class="vclass"></div>
+      <div class="paysel"><span class="lbl">${ic('wallet')}Pay driver with</span><div class="seg" id="pay">${Object.entries(PAYMENTS).map(([k, v]) => `<button data-m="${k}" class="${k === payM ? 'on' : ''}">${ic(PAY_IC[k])}${v}</button>`).join('')}</div></div>
+      ${bh ? `<p class="fine learn" id="bh">${ic('spark')}${bh.busy ? 'Busy hour' : 'Typical hour'}: riders usually get a driver in about ${fmtMin(bh.avgWaitSec)} at this time (learned from ${bh.samples} past rides).</p>` : ''}
       <label class="tog"><input type="checkbox" id="demo" ${demo ? 'checked' : ''}> Demo mode — show simulated drivers (clearly labeled)</label>
-      <div id="est"></div><button class="btn" id="req" disabled>Request ride</button>
+      <div id="est"></div><button class="btn gold big" id="req" disabled>Request ride</button>
       ${sched.length ? `<h3>Upcoming</h3>${sched.map(s => `<div class="card hist sched"><div><b>${esc(s.dest.label.split(',')[0])}</b><div class="muted">${new Date(s.pickupAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })} · driver search starts 30 min before</div></div><button class="btn link sm" data-x="${s.id}">Cancel</button></div>`).join('')}` : ''}`;
+      sheet.querySelectorAll('#pps [data-pp]').forEach(b => b.onclick = () => { const d = pops[+b.dataset.pp]; setPickup(d, d.label); });
+      $('#wal').onclick = (e) => { e.preventDefault(); wallet(); };
+      renderClasses();
       autocomplete($('#pu'), $('#pul'), () => pickup || QUEENS, (r) => setPickup(r, r.label));
       autocomplete($('#de'), $('#del'), () => pickup || QUEENS, (r) => setDest(r));
       sheet.querySelectorAll('#pop [data-p]').forEach(b => b.onclick = () => setDest(POPULAR[+b.dataset.p]));
@@ -234,6 +265,27 @@ function rider() {
       $('#req').onclick = () => $('#when').hidden ? startRequest() : schedule();
       if (pickup) { $('#pu').value = pickup.label || ''; } else locate();
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
+    }
+    function classEta(k) {
+      if (!pickup) return null;
+      const c = [...drivers.values()].filter(d => d.status === 'available' && VCLASS[k].test(d)).map(d => haversine(d, pickup)).sort((a, b) => a - b)[0];
+      return c == null ? null : (c * 1.4) / 8 + 60; // straight-line x1.4 road factor at ~18 mph city speed + 1 min to roll
+    }
+    function renderClasses() {
+      const box = $('#vc'); if (!box) return;
+      box.innerHTML = Object.entries(VCLASS).map(([k, v]) => { const e = classEta(k); return `<button class="ds-option" role="radio" aria-checked="${k === vcls}" data-v="${k}">${ic(v.icon, 'lg')}<div class="grow"><b>${v.name}</b> <span class="muted">${ic('user', 'sm')}${v.seats}</span><div class="muted">${e != null ? fmtMin(e) + ' away' : 'Checking cars…'}</div></div><div class="vp">${fare ? money(fare.total) : '—'}</div></button>`; }).join('') + '<p class="fine">Same upfront fare for both — no upcharge, no surge.</p>';
+      box.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { vcls = b.dataset.v; store.set('vclass', vcls); renderClasses(); });
+    }
+    every(() => { if (!trip) renderClasses(); }, 4000);
+    function wallet() {
+      const h = store.get('history_rider', []), m0 = new Date(); m0.setDate(1); m0.setHours(0, 0, 0, 0);
+      const month = h.filter(r => new Date(r.date) >= m0), spent = month.reduce((s, r) => s + (r.fare || 0), 0);
+      sheet.innerHTML = `${tabs('rider')}<div class="hi"><a href="#" id="bk2" class="back">${ic('back')}Back</a></div><h2>Wallet</h2>
+      <div class="card walletsum"><span class="fine">This month</span><div class="price">${money(spent)}</div><span class="muted">${month.length} ride${month.length === 1 ? '' : 's'} · paid directly to drivers</span></div>
+      <div class="lbl">Default payment</div><div id="pm">${Object.entries(PAYMENTS).map(([k, v]) => `<button class="ds-option" role="radio" aria-checked="${k === payM}" data-m="${k}">${ic(PAY_IC[k], 'lg')}<div class="grow"><b>${v}</b><div class="muted">${PAY_NOTE[k]}</div></div>${k === payM ? ic('check') : ''}</button>`).join('')}</div>
+      <p class="fine">${ic('shield', 'sm')} Rocapulco never stores cards or charges you in the app. No booking, service or cancellation fees.</p>`;
+      sheet.querySelectorAll('#pm [data-m]').forEach(b => b.onclick = () => { payM = b.dataset.m; store.set('pay', payM); wallet(); });
+      $('#bk2').onclick = (e) => { e.preventDefault(); plan(); };
     }
     function schedule() {
       const at = new Date($('#when').value).getTime();
@@ -266,26 +318,26 @@ function rider() {
       line?.remove(); line = L.polyline(rt.latlngs, { color: '#111', weight: 5 }).addTo(layer); map.fitBounds(line.getBounds(), { padding: [40, 40], paddingBottomRight: [20, 320] });
       if (!$('#est')) return;
       const n = rankDrivers([...drivers.values()], pickup).length;
-      $('#est').innerHTML = `<div class="card fare"><div><b>Rocapulco Black Car</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)} ride${rt.real ? '' : ' (approx.)'} · ${n ? n + ' car' + (n > 1 ? 's' : '') + ' nearby' : 'no cars nearby yet'}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>
-<p class="nosurge" id="surge">✓ No surge, ever — same price at 3 AM, in the rain, on New Year's Eve.</p>
+      $('#est').innerHTML = `<div class="card fare"><div><b>${VCLASS[vcls].name}</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)} ride${rt.real ? '' : ' (approx.)'} · ${n ? n + ' car' + (n > 1 ? 's' : '') + ' nearby' : 'no cars nearby yet'}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>
+<p class="nosurge" id="surge">${ic('shield')} No surge, ever — same price at 3 AM, in the rain, on New Year's Eve.</p>
       <details class="bd" id="bd"><summary>Fare breakdown — no hidden fees</summary>${fare.lines.map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total you pay</span><b>${money(fare.total)}</b></div><p class="fine">No booking, service or cancellation fees. Tolls (if any) and tip are your choice and paid to the driver. ${fare.flat ? 'Airport flat rate is fixed.' : `Final fare uses the actual route; usually ${money(fare.low)}–${money(fare.high)}.`}</p></details>
       <p class="fine">You'll see your driver's real ETA once a driver accepts. <b>Pay driver directly (cash, card, Zelle or Venmo)</b> — the app never charges you. If a driver cancels, you pay nothing.</p>`;
-      $('#req').disabled = false;
+      $('#req').disabled = false; renderClasses();
     }
     // ---- dispatch: rank by road ETA (OSRM table), one offer at a time, 15 s each, auto-reassign ----
     async function startRequest(sched) {
       if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label }); }
       if (sched) { sched.started = true; store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== sched.id)); }
-      trip = { pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
+      trip = { vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
       sub('trip/' + trip.id, onTrip);
       bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
       import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; }).catch(e => console.warn('server booking (relay still live)', e.message));
       dispatch('Finding your driver…');
     }
-    const pub = (t) => ({ pay: t.pay, id: t.id, rider: t.rider, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
+    const pub = (t) => ({ vclass: t.vclass, pay: t.pay, id: t.id, rider: t.rider, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
     async function dispatch(title) {
       dmk.forEach(m => m.remove()); carMk?.remove(); carMk = null; clearInterval(tick);
-      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="spinner"></div><p class="muted" id="ds">Contacting the closest driver by road time</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`📞 Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
+      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="spinner"></div><p class="muted" id="ds">Contacting the closest driver by road time</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
       $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; plan(); };
       trip.state = 'requested'; trip.driver = null; const t0 = Date.now(), me_t = trip;
       while (trip === me_t && (trip.state === 'requested' || trip.state === 'offered')) {
@@ -294,7 +346,7 @@ function rider() {
           if (trip === me_t && trip.state === 'offered') { trip.excl.push(trip.offerTo); trip.state = 'requested'; bus.publish('trip/' + trip.id, { type: 'timeout', driver: trip.offerTo }); }
           continue;
         }
-        const near = rankDrivers([...drivers.values()], pickup, { exclude: trip.excl }).slice(0, 5);
+        const near = rankDrivers([...drivers.values()].filter(d => VCLASS[trip.vclass || 'sedan'].test(d)), pickup, { exclude: trip.excl }).slice(0, 5);
         if (!near.length) { if (Date.now() - t0 > 90000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">No online drivers within 9 miles right now. Nothing was charged. Call dispatch — a real person will find you a car.</p>${callBtn()}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
         const ranked = rankByRoad(near, await roadTimes(near, pickup)); const c = ranked[0];
         trip.state = 'offered'; trip.offerTo = c.id; if ($('#ds')) $('#ds').textContent = `Asking ${c.name}${c.roadSec != null ? ` (${fmtMin(c.roadSec)} away by road)` : ''}…`;
@@ -312,9 +364,9 @@ function rider() {
         trip.state = 'accepted'; trip.driver = m.driver; trip.matchedAt = Date.now(); trip.lastLoc = Date.now(); trip.promised = null; trip.eta = null;
         carMk = L.marker([m.driver.lat, m.driver.lng], { icon: carIcon(m.driver), zIndexOffset: 1000 }).addTo(layer);
         if (trip.scheduledFor) notify(`${m.driver.name} confirmed for your scheduled ride.`);
-        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="av">🚕</div><div><b>${esc(m.driver.name)}</b> ★${m.driver.rating ?? '5.0'}<div class="muted">${esc(m.driver.car)} · <b>${esc(m.driver.plate)}</b></div></div><div class="eta" id="eta">…</div></div>
+        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="ds-avatar">${esc(initials(m.driver.name))}</div><div class="grow"><b>${esc(m.driver.name)}</b> <span class="rt">${ic('star')}${m.driver.rating ?? '5.0'}</span><div class="muted">${esc(m.driver.car)}</div><span class="plate">${esc(m.driver.plate)}</span></div><div class="etabox"><div class="eta" id="eta">…</div><span class="fine">away</span></div></div>
         ${m.driver.sim ? '<p class="demo">DEMO: this is a simulated driver</p>' : ''}
-        <div class="two eq">${m.driver.phone ? `<a class="btn alt" href="tel:${esc(m.driver.phone)}">📞 Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">💬 Message</button></div><div id="chat"></div>
+        <div class="two eq">${m.driver.phone ? `<a class="btn alt" href="tel:${esc(m.driver.phone)}">${ic('phone')}Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">Message</button></div><div id="chat"></div>
         ${callBtn()}<p class="muted">Pay: <b>${PAYMENTS[trip.pay]}</b> · Pickup: ${esc(trip.pickup.label)}${trip.pickup.note ? ' · “' + esc(trip.pickup.note) + '”' : ''} · ${money(trip.fare)}</p>
         <p class="fine" id="cxs"></p><button class="btn alt" id="cx">Cancel ride</button><button class="btn danger" id="ns" hidden>Driver never showed — report & cancel</button>`;
         chatBox($('#chat'), $('#chatb'), trip.id, 'rider');
@@ -351,18 +403,20 @@ function rider() {
     }
     function receipt(m) {
       const rec = { id: trip.id, date: new Date().toISOString(), from: trip.pickup.label, to: dest.label, fare: m.fare, pay: trip.pay, lines: m.lines || trip.lines, miles: +(m.meters / 1609.344).toFixed(2), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate };
+      try { learn.record({ pickup: trip.pickup, dest, waitSec: trip.matchedAt ? (trip.matchedAt - trip.ts) / 1000 : null, rideSec: m.seconds }); } catch {}
       const h = store.get('history_rider', []); h.unshift(rec); store.set('history_rider', h.slice(0, 100));
-      sheet.innerHTML = `<h2 id="done">You've arrived 🎉</h2><div class="card rcpt">${(rec.lines || []).map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total</span><b id="rfare">${money(m.fare)}</b></div><div class="row"><span>Driver</span><span>${esc(rec.driver)} · ${esc(rec.plate)}</span></div><div class="row"><span>From</span><span>${esc(rec.from)}</span></div><div class="row"><span>To</span><span>${esc(rec.to)}</span></div></div>
+      sheet.innerHTML = `<h2 id="done">You've arrived</h2><div class="card rcpt">${(rec.lines || []).map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total</span><b id="rfare">${money(m.fare)}</b></div><div class="row"><span>Driver</span><span>${esc(rec.driver)} · ${esc(rec.plate)}</span></div><div class="row"><span>From</span><span>${esc(rec.from)}</span></div><div class="row"><span>To</span><span>${esc(rec.to)}</span></div></div>
 <div class="row"><span>Paying with</span><b id="rpay">${PAYMENTS[rec.pay]}</b></div></div>
       <p class="fine"><b>Pay ${money(m.fare)} directly to your driver.</b> ${PAY_NOTE[rec.pay]} Rocapulco never charges your card in the app — no surprise charges.</p>${payLink(rec.pay, m.fare)}
-      <p>Rate your ride</p><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}">★</button>`).join('')}</div><button class="btn" id="fin">Done</button><button class="btn link" id="prob">Report a problem</button>${callBtn()}`;
-      sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + trip.id, { type: 'rate', stars: s, driver: trip.driver.id }); rec.stars = s; store.set('history_rider', [rec, ...store.get('history_rider', []).slice(1)]); });
-      $('#prob').onclick = () => { const r = { id: 'r-' + uid(), trip: trip.id, kind: 'trip_problem', driver: trip.driver.name, plate: trip.driver.plate, at: new Date().toISOString(), rider: me.name }; bus.publish('reports/' + r.id, r); $('#prob').textContent = 'Reported to dispatcher ✓ (#' + r.id + ')'; };
+      <h3>Rate your ride</h3><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}" aria-label="${i} star${i > 1 ? 's' : ''}">${ic('star')}</button>`).join('')}</div><div class="tags" id="tags" hidden>${RATE_TAGS.map(t => `<button class="ds-chip" aria-pressed="false">${t}</button>`).join('')}</div><button class="btn" id="fin">Done</button><button class="btn link" id="prob">Report a problem</button>${callBtn()}`;
+      sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + trip.id, { type: 'rate', stars: s, driver: trip.driver.id }); rec.stars = s; store.set('history_rider', [rec, ...store.get('history_rider', []).slice(1)]); $('#tags').hidden = false; });
+      sheet.querySelectorAll('#tags button').forEach(b => b.onclick = () => { b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') !== 'true'); rec.tags = [...sheet.querySelectorAll('#tags [aria-pressed=true]')].map(x => x.textContent); bus.publish('trip/' + trip.id, { type: 'tags', tags: rec.tags, driver: trip.driver.id }); store.set('history_rider', [rec, ...store.get('history_rider', []).slice(1)]); });
+      $('#prob').onclick = () => { const r = { id: 'r-' + uid(), trip: trip.id, kind: 'trip_problem', driver: trip.driver.name, plate: trip.driver.plate, at: new Date().toISOString(), rider: me.name }; bus.publish('reports/' + r.id, r); $('#prob').textContent = 'Reported to dispatcher (#' + r.id + ')'; };
       $('#fin').onclick = () => { carMk?.remove(); line?.remove(); pinD?.remove(); pinD = line = null; dest = null; trip = null; plan(); };
     }
     function history() {
       const h = store.get('history_rider', []);
-      sheet.innerHTML = `${tabs('rider')}<h2>Your trips</h2>${h.length ? h.map(r => `<div class="card hist"><div><b>${esc(r.to.split(',')[0])}</b><div class="muted">${new Date(r.date).toLocaleString()} · ${esc(r.driver)}${r.stars ? ' · ' + '★'.repeat(r.stars) : ''}</div></div><b>${money(r.fare)}</b></div>`).join('') : '<p class="muted">No trips yet.</p>'}<button class="btn" id="bk">Back</button>`;
+      sheet.innerHTML = `${tabs('rider')}<h2>Your trips</h2>${h.length ? h.map(r => `<div class="card hist trip"><div class="rte"><span class="dot a"></span><span class="ln"></span><span class="dot b"></span></div><div class="grow"><div class="ell">${esc((r.from || '').split(',')[0])}</div><div class="ell"><b>${esc(r.to.split(',')[0])}</b></div><div class="muted">${new Date(r.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${esc(r.driver)}${r.stars ? ` · ${r.stars}${ic('star', 'sm')}` : ''}</div></div><div class="amt"><b>${money(r.fare)}</b><span class="fine">${esc(PAYMENTS[r.pay] || '')}</span></div></div>`).join('') : `<div class="empty">${ic('history')}<p class="muted">No trips yet. Your rides will show here.</p></div>`}<button class="btn" id="bk">Back</button>`;
       $('#bk').onclick = plan;
     }
     plan();
@@ -406,11 +460,12 @@ function driver() {
       const e = earnings();
       sheet.innerHTML = `${tabs('driver')}<div class="hi">${esc(me.name)} · ${esc(me.car)} · ${esc(me.plate)}</div>
       <button class="btn big ${online ? 'alt' : ''}" id="tg">${online ? 'Go offline' : 'Go online'}</button>
-      <p id="dst" class="muted">${online ? '🟢 Online — waiting for ride requests near you' : '⚪ Offline'}</p>
-      <div class="grid"><div class="card stat"><span>Your take today (70%)</span><b id="etoday">${money(split(e.today).driver)}</b></div><div class="card stat"><span>Trips today</span><b>${e.n}</b></div><div class="card stat"><span>Your take this week</span><b id="eweek">${money(split(e.week).driver)}</b></div><div class="card stat"><span>Rating</span><b>★ ${avgRating()}</b></div></div>
+      <p id="dst" class="muted">${online ? '<i class="live"></i>Online — waiting for ride requests near you' : '<i class="off"></i>Offline'}</p>
+      <div class="grid"><div class="card stat"><span>Your take today (70%)</span><b id="etoday">${money(split(e.today).driver)}</b></div><div class="card stat"><span>Trips today</span><b>${e.n}</b></div><div class="card stat"><span>Your take this week</span><b id="eweek">${money(split(e.week).driver)}</b></div><div class="card stat"><span>Rating</span><b>${ic('star', 'sm')} ${avgRating()}</b></div></div>
       <div class="card split" id="esplit"><div class="row"><span>Fares collected today</span><span>${money(e.today)}</span></div><div class="row"><span>You keep (70%)</span><b>${money(split(e.today).driver)}</b></div><div class="row"><span>Rocapulco (30%)</span><span>${money(split(e.today).company)}</span></div></div>
       <div class="card"><label class="tog"><input type="checkbox" id="hm" ${homeMode ? 'checked' : ''}> <b>Heading home</b> — only rides that end closer to home. No daily limit.</label>
-      <div class="muted">${home ? 'Home set ✓' : 'No home set'} · <a href="#" id="sethome">Set home to my current spot</a> · <span id="hskip"></span></div></div>
+      <div class="muted">${home ? 'Home set' : 'No home set'} · <a href="#" id="sethome">Set home to my current spot</a> · <span id="hskip"></span></div></div>
+      ${(() => { const ps = learn.popularPickups(loc || QUEENS, { hour: new Date().getHours(), radiusKm: 6 }); return ps.length ? `<div class="card"><div class="lbl">${ic('spark')}Busy pickup spots around this hour</div>${ps.map(p => `<div class="row"><span>${ic('pin', 'sm')} ${esc(p.label)}</span><span class="muted">${p.count} rides</span></div>`).join('')}<p class="fine">Learned on this device from completed trips (anonymized).</p></div>` : ''; })()}
       ${callBtn()}<p class="fine">Declining a ride never hurts you — there is no acceptance rate. GPS: ${simulate ? 'simulated' : 'power-saver while waiting, high-accuracy on trips'}.</p>
       <label class="tog"><input type="checkbox" id="sim" ${simulate ? 'checked' : ''}> Simulate GPS (moves the car along the route — for testing indoors)</label>
       <label class="tog"><input type="checkbox" id="vo" ${store.get('voice', true) ? 'checked' : ''}> Voice directions</label>
@@ -436,8 +491,8 @@ function driver() {
       sheet.innerHTML = `<h2>New ride request</h2><div class="card offer"><div class="fare"><div class="price" id="ofare">${money(t.fare)}</div><div class="permi" id="opm">$${e0.perTripMile.toFixed(2)}/mi</div></div><div class="muted" id="otake">You keep <b>${money(e0.driverTake)}</b> (70%) · rider pays ${PAYMENTS[t.pay || 'cash']}</div>
       <div class="muted" id="oeco">${t.miles} mi trip · ${t.minutes} min · pickup ~${e0.pickupMiles} mi · $${e0.perTotalMile.toFixed(2)}/mi incl. pickup</div>
       <p><span class="dot a"></span> <b>Pickup:</b> ${esc(t.pickup.label)}${t.pickup.note ? `<br><i>“${esc(t.pickup.note)}”</i>` : ''}</p><p><span class="dot b"></span> <b>Drop-off:</b> ${esc(t.dest.label)}</p>
-      <p class="muted">Rider: ${esc(t.rider.name)}${t.scheduledFor ? ` · scheduled ${new Date(t.scheduledFor).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}</p>
-      ${homeMode && home ? `<p class="muted">${homeFilterOk({ driver: loc, dest: t.dest, home }) ? '🏠 Ends closer to home' : ''}</p>` : ''}</div>
+      <p class="muted">${t.vclass === 'suv' ? '<span class="ds-badge">SUV requested</span> ' : ''}Rider: ${esc(t.rider.name)}${t.scheduledFor ? ` · scheduled ${new Date(t.scheduledFor).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}</p>
+      ${homeMode && home ? `<p class="muted">${homeFilterOk({ driver: loc, dest: t.dest, home }) ? ic('home') + ' Ends closer to home' : ''}</p>` : ''}</div>
       <p class="fine">Upfront fare, no surge — what you see is what the rider pays. Declining is free, no penalty.</p>
       <div class="two"><button class="btn alt" id="dec">Decline</button><button class="btn" id="acc">Accept (<span id="cd">15</span>)</button></div>`;
       const pp = L.marker(t.pickup, { icon: pinA }).addTo(layer), pd = L.marker(t.dest, { icon: pinB }).addTo(layer); map.fitBounds([[loc.lat, loc.lng], [t.pickup.lat, t.pickup.lng], [t.dest.lat, t.dest.lng]], { padding: [60, 60] });
@@ -455,8 +510,8 @@ function driver() {
       line?.remove(); line = L.polyline(rt.latlngs, { color: p === 'pickup' ? '#2563eb' : '#111', weight: 6 }).addTo(layer); L.marker(target, { icon: p === 'pickup' ? pinA : pinB }).addTo(line._map ? layer : layer);
       map.fitBounds(line.getBounds(), { padding: [40, 40] });
       sheet.innerHTML = `<div class="nav"><div class="turn" id="turn">Starting navigation…</div><div class="muted" id="tdist"></div></div>
-      <div class="card"><b>${p === 'pickup' ? 'Pick up ' + esc(trip.rider.name) : 'Drop off at ' + esc(trip.dest.label.split(',')[0])}</b><div class="muted">${esc(target.label)}</div>${p === 'pickup' && trip.pickup.note ? `<div class="note">📍 “${esc(trip.pickup.note)}”</div>` : ''}<div id="rem" class="muted"></div></div>
-      <div class="two eq">${trip.rider.phone ? `<a class="btn alt" href="tel:${esc(trip.rider.phone)}">📞 Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">💬 Message</button></div><div id="chat"></div>
+      <div class="card"><b>${p === 'pickup' ? 'Pick up ' + esc(trip.rider.name) : 'Drop off at ' + esc(trip.dest.label.split(',')[0])}</b><div class="muted">${esc(target.label)}</div>${p === 'pickup' && trip.pickup.note ? `<div class="note">“${esc(trip.pickup.note)}”</div>` : ''}<div id="rem" class="muted"></div></div>
+      <div class="two eq">${trip.rider.phone ? `<a class="btn alt" href="tel:${esc(trip.rider.phone)}">${ic('phone')}Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">Message</button></div><div id="chat"></div>
       <a class="btn alt" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=driving">Open in Google Maps</a>
       <button class="btn" id="act">${p === 'pickup' ? "I've arrived" : 'Complete trip'}</button>${p === 'pickup' ? '<button class="btn link" id="dcx">Cancel trip</button>' : ''}`;
       $('#act').onclick = p === 'pickup' ? arrived : complete;
@@ -468,7 +523,7 @@ function driver() {
       if (!rt || !loc || !$('#turn')) return;
       const pr = progress(rt, loc);
       if (Date.now() - (onMove.t || 0) > 1800) onMove.t = Date.now(), bus.publish('trip/' + trip.id, { type: 'loc', lat: loc.lat, lng: loc.lng, eta: pr.eta, remain: pr.remain });
-      $('#turn').textContent = (pr.remain < 40 ? '🏁 ' : '➜ ') + (pr.remain < 40 ? 'You have arrived' : pr.next.text);
+      $('#turn').textContent = (pr.remain < 40 ? 'You have arrived' : pr.next.text);
       $('#tdist').textContent = pr.remain < 40 ? '' : 'in ' + fmtDist(pr.toNext);
       $('#rem').textContent = `${fmtDist(pr.remain)} · ${fmtMin(pr.eta)} remaining`;
       if (lastStep !== pr.next) { lastStep = pr.next; speak(pr.next.text); }
@@ -483,6 +538,7 @@ function driver() {
     function complete() {
       const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked — no surprises
       bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, lines: f.lines, meters: rt.distance, seconds: rt.duration });
+      try { learn.record({ pickup: trip.pickup, dest: trip.dest, waitSec: null, rideSec: rt.duration }); } catch {}
       const h = store.get('history_driver', []); h.unshift({ id: trip.id, date: new Date().toISOString(), fare: f.total, to: trip.dest.label, rider: trip.rider.name }); store.set('history_driver', h.slice(0, 500));
       speak('Trip complete. Collect ' + f.total.toFixed(2) + ' dollars.');
       sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect from rider · <b>${PAYMENTS[trip.pay || 'cash']}</b></div><div class="price">${money(f.total)}</div></div><div class="card"><div class="row"><span>You keep (70%)</span><b>${money(split(f.total).driver)}</b></div><div class="row"><span>Rocapulco (30%)</span><span>${money(split(f.total).company)}</span></div></div><p class="fine">Collect payment directly (cash, your card reader, Zelle or Venmo). Tolls extra.</p><button class="btn" id="bk">Back online</button>`;
@@ -498,8 +554,8 @@ function admin() {
   const drivers = new Map(), mk = new Map(), trips = new Map(), reports = [];
   sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2><div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
   <div class="grid"><div class="card stat"><span>Fares today</span><b id="nf">$0.00</b></div><div class="card stat"><span>Rocapulco 30%</span><b id="nc">$0.00</b></div></div>
-  <p class="nosurge">✓ No surge, ever. Pricing is fixed: $3.50 + $2.50/mi + $0.40/min · JFK $50 · LGA $55.</p>
-  <h3>Needs a driver</h3><div id="open"></div><div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`📞 Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  <p class="nosurge">${ic('shield')} No surge, ever. Pricing is fixed: $3.50 + $2.50/mi + $0.40/min · JFK $50 · LGA $55.</p>
+  <h3>Needs a driver</h3><div id="open"></div><div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0;
   const avail = () => { const now = Date.now(); return [...drivers.values()].filter(d => d.status === 'available' && now - d.ts < 30000); };
@@ -523,7 +579,7 @@ function admin() {
         t.assigned = d.name; notify(`Assigned ${d.name} to ${t.rider}`); draw();
       });
     }
-    $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>⚠️ ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
+    $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>${ic('alert')} ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
     $('#tl') && ($('#tl').innerHTML = list.map(t => `<div class="card hist"><div><b>${esc(t.rider)} → ${esc(t.to)}</b><div class="muted">${esc(t.state)}${t.driver ? ' · ' + esc(t.driver) : ''} · ${new Date(t.ts).toLocaleTimeString()}</div></div><b>${money(t.fare || 0)}</b></div>`).join(''));
   };
   sub('drivers/+', (d) => { drivers.set(d.id, d); if (d.status === 'offline') return draw(); if (!mk.has(d.id)) mk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).bindTooltip(`${d.name} · ${d.status}`).addTo(layer)); else { animateTo(mk.get(d.id), [d.lat, d.lng]); mk.get(d.id).setTooltipContent(`${d.name} · ${d.status}`); } draw(); });

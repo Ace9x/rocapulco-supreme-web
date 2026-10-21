@@ -23,7 +23,7 @@ export class SupabaseBus {
   constructor({ url, key, ns, onStatus = () => {} }) {
     this.subs = []; this.queue = []; this.onStatus = onStatus;
     import('https://esm.sh/@supabase/supabase-js@2').then(({ createClient }) => {
-      this.sb = createClient(url, key); // TODO(auth): this.sb.auth.signInWithOtp({ phone }) in profileForm
+      this.sb = createClient(url, key); globalThis.ROC_SB = this.sb; // used by learn.js for anonymized ride_stats // TODO(auth): this.sb.auth.signInWithOtp({ phone }) in profileForm
       this.ch = this.sb.channel('rocapulco:' + ns, { config: { broadcast: { self: false } } });
       this.ch.on('broadcast', { event: '*' }, ({ event, payload }) => this._deliver(event, payload));
       this.ch.subscribe((s) => { onStatus(s === 'SUBSCRIBED' ? 'online' : 'reconnecting'); if (s === 'SUBSCRIBED') this.queue.splice(0).forEach(([t, m]) => this._send(t, m)); });
