@@ -69,3 +69,14 @@ input,select{background:#1a1a1a;color:#f5f5f5;border:1px solid var(--line)}input
 .assign{display:block}.drvs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.split .row b{color:var(--gold2)}
 .leaflet-container{background:#111}
 header{gap:6px}.logo,.hcall,.net{white-space:nowrap;font-size:13px;padding:6px 10px}.hcall{margin:0 0 0 auto}@media(max-width:380px){.logo{font-size:12px}}
+/* v3 map */
+.maplibregl-map{background:#0b0b0d}.maplibregl-ctrl-attrib{background:#000a!important;color:#888}.maplibregl-ctrl-attrib a{color:#c9a94a}
+header~#map .maplibregl-ctrl-top-left{top:56px}
+.mk{width:34px;height:34px;display:grid;place-items:center;line-height:1}.mk .rot{transition:transform .6s ease;display:grid;place-items:center}
+.mk.car{width:48px;height:48px;filter:drop-shadow(0 0 6px #d4af3766)}.mk.sim{outline:0}.mk.car.sim{filter:drop-shadow(0 0 6px #f59e0b88)}
+.mk.pin{position:relative}.mk.pin .rot b{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font:800 14px system-ui;background:var(--gold);color:#000;border:3px solid #000;box-shadow:0 0 0 2px var(--gold),0 6px 14px #000a;position:relative;z-index:1}
+.mk.pin.b .rot b{background:#000;color:var(--gold);box-shadow:0 0 0 2px var(--gold),0 6px 14px #000a}
+.mk .pulse{position:absolute;inset:-6px;border-radius:50%;background:#d4af3755;animation:pz 1.8s ease-out infinite}
+@keyframes pz{0%{transform:scale(.5);opacity:1}100%{transform:scale(2.2);opacity:0}}
+.mk.pin{background:none!important;border:0!important;box-shadow:none!important;border-radius:0}
+.mk.car svg{width:36px;height:58px}

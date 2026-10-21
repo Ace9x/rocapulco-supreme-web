@@ -21,7 +21,8 @@ const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: s => { 
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a>' }).addTo(map);
+// vector tiles via map.js
+void ('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a>' });
 const layer = L.layerGroup().addTo(map);
 const icon = (html, cls = '') => L.divIcon({ html, className: 'mk ' + cls, iconSize: [34, 34], iconAnchor: [17, 17] });
 const carIcon = (d) => icon('🚘', d && d.sim ? 'sim' : '');
