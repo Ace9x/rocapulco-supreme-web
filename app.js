@@ -279,13 +279,14 @@ function rider() {
       trip = { pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
       sub('trip/' + trip.id, onTrip);
       bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
+      import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; }).catch(e => console.warn('server booking (relay still live)', e.message));
       dispatch('Finding your driver…');
     }
     const pub = (t) => ({ pay: t.pay, id: t.id, rider: t.rider, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
     async function dispatch(title) {
       dmk.forEach(m => m.remove()); carMk?.remove(); carMk = null; clearInterval(tick);
       sheet.innerHTML = `<h2>${esc(title)}</h2><div class="spinner"></div><p class="muted" id="ds">Contacting the closest driver by road time</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`📞 Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
-      $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); trip.state = 'cancelled'; plan(); };
+      $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; plan(); };
       trip.state = 'requested'; trip.driver = null; const t0 = Date.now(), me_t = trip;
       while (trip === me_t && (trip.state === 'requested' || trip.state === 'offered')) {
         if (trip.state === 'offered') { // dispatcher one-tap assign took over this offer
@@ -317,7 +318,7 @@ function rider() {
         ${callBtn()}<p class="muted">Pay: <b>${PAYMENTS[trip.pay]}</b> · Pickup: ${esc(trip.pickup.label)}${trip.pickup.note ? ' · “' + esc(trip.pickup.note) + '”' : ''} · ${money(trip.fare)}</p>
         <p class="fine" id="cxs"></p><button class="btn alt" id="cx">Cancel ride</button><button class="btn danger" id="ns" hidden>Driver never showed — report & cancel</button>`;
         chatBox($('#chat'), $('#chatb'), trip.id, 'rider');
-        $('#cx').onclick = () => { const s = cancelStatus({ matchedAt: trip.matchedAt, now: Date.now(), promisedEtaSec: trip.promised, currentEtaSec: trip.eta }); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', late: !s.free }); trip.state = 'cancelled'; carMk?.remove(); plan(); };
+        $('#cx').onclick = () => { const s = cancelStatus({ matchedAt: trip.matchedAt, now: Date.now(), promisedEtaSec: trip.promised, currentEtaSec: trip.eta }); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', late: !s.free }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; carMk?.remove(); plan(); };
         $('#ns').onclick = noShow;
         tick = setInterval(() => {
           if (!trip || !$('#cxs')) return;
@@ -498,7 +499,8 @@ function admin() {
   sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2><div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
   <div class="grid"><div class="card stat"><span>Fares today</span><b id="nf">$0.00</b></div><div class="card stat"><span>Rocapulco 30%</span><b id="nc">$0.00</b></div></div>
   <p class="nosurge">✓ No surge, ever. Pricing is fixed: $3.50 + $2.50/mi + $0.40/min · JFK $50 · LGA $55.</p>
-  <h3>Needs a driver</h3><div id="open"></div><div id="rp"></div><h3>All trips</h3><div id="tl"></div>${callBtn(`📞 Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  <h3>Needs a driver</h3><div id="open"></div><div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`📞 Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0;
   const avail = () => { const now = Date.now(); return [...drivers.values()].filter(d => d.status === 'available' && now - d.ts < 30000); };
   const draw = () => {
