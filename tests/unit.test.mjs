@@ -2,14 +2,14 @@ import test from 'node:test'; import assert from 'node:assert/strict';
 import { estimateFare } from '../fare.js';
 import { rankDrivers, transition, haversine, cumulative, pointAlong, nearestIndex, instruction } from '../dispatch.js';
 test('minimum fare applies to tiny trips', () => assert.equal(estimateFare({ meters: 100, seconds: 30 }).total, 8));
-test('matches original fare.ts: 5mi/15min = $5+$12.50+$6 = $23.50', () => assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900 }).total, 23.5));
-test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 45); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 55); });
+test('Rocapulco spec: 5mi/15min = $3.50+$12.50+$6 = $22.00', () => assert.equal(estimateFare({ meters: 5 * 1609.344, seconds: 900 }).total, 22));
+test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 50); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 55); });
 test('fare grows with distance and time', () => {
   const a = estimateFare({ meters: 5000, seconds: 900 }), b = estimateFare({ meters: 10000, seconds: 1500 });
   assert.ok(b.total > a.total); assert.ok(a.low < a.total && a.high > a.total);
 });
 
-test('surge multiplies meter', () => assert.ok(estimateFare({ meters: 8000, seconds: 900, surge: 1.5 }).total > estimateFare({ meters: 8000, seconds: 900 }).total));
+test('no surge, ever: a surge input is ignored', () => assert.equal(estimateFare({ meters: 8000, seconds: 900, surge: 3 }).total, estimateFare({ meters: 8000, seconds: 900 }).total));
 test('rejects bad input', () => assert.throws(() => estimateFare({ meters: -1, seconds: 1 })));
 test('haversine ~1.11km per 0.01 lat', () => assert.ok(Math.abs(haversine({ lat: 40.7, lng: -73.8 }, { lat: 40.71, lng: -73.8 }) - 1112) < 5));
 test('dispatch ranks nearest fresh available drivers, skips stale/busy/declined/far', () => {
@@ -39,7 +39,7 @@ test('turn instructions', () => {
   assert.equal(instruction({ name: 'Queens Blvd', maneuver: { type: 'turn', modifier: 'left' } }), 'Turn left onto Queens Blvd');
   assert.equal(instruction({ maneuver: { type: 'arrive' } }), 'Arrive at destination');
 });
-import { offerEconomics, capSurge, SURGE_CAP } from '../fare.js';
+import { offerEconomics, capSurge, SURGE_CAP, split, POPULAR, matchFlatRate, DISPATCH_TEL, PAYMENTS } from '../fare.js';
 import { homeFilterOk, rankByRoad, cancelStatus, noShowAllowed, scheduleState, smooth, FREE_CANCEL_MS, SCHED_LEAD_MS } from '../dispatch.js';
 test('breakdown lines sum exactly to total (no hidden fees)', () => {
   for (const [m, s, sg] of [[100, 30, 1], [8000, 900, 1], [8000, 900, 1.4], [50000, 3000, 3]]) {
@@ -47,14 +47,12 @@ test('breakdown lines sum exactly to total (no hidden fees)', () => {
     assert.equal(Math.round(f.lines.reduce((a, l) => a + l[1], 0) * 100) / 100, f.total);
   }
 });
-test('surge is off by default and capped', () => {
-  assert.equal(estimateFare({ meters: 8000, seconds: 900 }).surge, 1);
-  assert.equal(capSurge(3), SURGE_CAP); assert.equal(capSurge(0.5), 1);
-  const a = estimateFare({ meters: 8000, seconds: 900 }).total, b = estimateFare({ meters: 8000, seconds: 900, surge: 9 }).total;
-  assert.ok(Math.abs(b - a * SURGE_CAP) < 0.02);
-});
-test('surge never applies to airport flat rates', () => assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK', surge: 1.5 }).total, 45));
-test('offer economics $/mi', () => { const e = offerEconomics({ fare: 20, tripMeters: 1609.344 * 4, pickupMeters: 1609.344 }); assert.equal(e.perTripMile, 5); assert.equal(e.perTotalMile, 4); });
+test('surge is always 1', () => { assert.equal(estimateFare({ meters: 8000, seconds: 900, surge: 2 }).surge, 1); assert.equal(capSurge(3), 1); assert.equal(SURGE_CAP, 1); });
+test('70/30 split adds up', () => { for (const f of [8, 22, 50, 55, 33.33]) { const x = split(f); assert.equal(Math.round((x.driver + x.company) * 100) / 100, f); } assert.equal(split(50).driver, 35); assert.equal(split(50).company, 15); });
+test('six popular Far Rockaway destinations incl JFK/LGA flat rates', () => { assert.equal(POPULAR.length, 6); assert.equal(matchFlatRate(POPULAR[0].label), 'jfk'); assert.equal(matchFlatRate(POPULAR[1].label), 'laguardia'); });
+test('dispatch number and payments', () => { assert.equal(DISPATCH_TEL, '+17184747100'); assert.deepEqual(Object.keys(PAYMENTS), ['cash', 'card', 'zelle', 'venmo']); });
+test('surge never applies to airport flat rates', () => assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK', surge: 1.5 }).total, 50));
+test('offer economics $/mi', () => { const e = offerEconomics({ fare: 20, tripMeters: 1609.344 * 4, pickupMeters: 1609.344 }); assert.equal(e.perTripMile, 5); assert.equal(e.perTotalMile, 4); assert.equal(e.driverTake, 14); });
 test('heading-home filter', () => {
   const home = { lat: 40.60, lng: -73.75 }, driver = { lat: 40.70, lng: -73.80 };
   assert.ok(homeFilterOk({ driver, home, dest: { lat: 40.62, lng: -73.76 } }));
