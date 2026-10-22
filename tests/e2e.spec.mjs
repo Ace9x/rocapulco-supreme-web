@@ -121,7 +121,7 @@ test('dispatch center: one-tap assign after a decline; popular destination; no c
   await a.locator('#open [data-a]').first().click();
   await expect(d.locator('#acc')).toBeVisible({ timeout: 20000 }); await d.click('#acc');
   await expect(r.locator('#st')).toContainText('on the way', { timeout: 15000 });
-  await expect(r.locator('a.call')).toHaveAttribute('href', 'tel:+17184747100');
+  await r.click('#ropt'); await expect(r.locator('#rmenu a[href="tel:+17184747100"]')).toBeVisible();
   await expect(a.locator('#tl')).toContainText('driver en route', { timeout: 15000 });
   await a.screenshot({ path: SHOTS + '22-dispatch-center-en-route.png' });
   await d.click('#dcx'); // driver cancels: rider is told there's no charge and is re-dispatched
