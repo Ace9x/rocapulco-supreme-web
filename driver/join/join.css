@@ -1,0 +1,7 @@
+.join nav{display:flex;justify-content:space-between}.join .lede{font-size:1.1rem;line-height:1.55}
+.cta{display:inline-block;padding:14px 26px;border-radius:14px;background:linear-gradient(180deg,#F0D27A,#E6C25A 55%,#C9A43F);color:#0B0B0C!important;font-weight:800;text-decoration:none;font-size:1.05rem}
+.ap{max-width:560px;margin:0 auto}.ap label{display:block;margin:12px 0 4px;font-weight:600}.ap input,.ap select{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #3a3a3f;background:#141416;color:#F5F5F4;font-size:16px}
+.ap .row{display:flex;gap:10px;align-items:center}.ap .row input[type=checkbox]{width:auto}.ap .steps{display:flex;gap:6px;margin:10px 0 18px}.ap .steps i{flex:1;height:5px;border-radius:3px;background:#2a2a2e}.ap .steps i.on{background:#D4AF37}
+.ap .doc{border:1px solid #2f2f33;border-radius:12px;padding:12px;margin:10px 0}.ap .doc img{max-width:120px;max-height:80px;border-radius:6px;display:block;margin-top:8px}
+.ap .ok{color:#7ad19a}.ap .warn{color:#f0b35a}.ap .err{color:#ff8a80}.ap .btns{display:flex;gap:10px;margin-top:18px}.ap button{padding:13px 20px;border-radius:12px;border:1px solid #3a3a3f;background:#1c1c1f;color:#F5F5F4;font-weight:700;font-size:16px}
+.ap button.cta{border:0}.ap .msg{min-height:1.4em;margin-top:8px}
