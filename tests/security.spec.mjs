@@ -1,0 +1,40 @@
+import { test, expect } from '@playwright/test'; import { newCtx, appUrl, goOnline } from './staff-session.mjs';
+const BASE = process.env.BASE || 'http://localhost:8099/', ns = 'sec' + Date.now();
+const url = (h) => appUrl(BASE, `?transport=local&ns=${ns}&speed=20&nosplash=1`, h);
+test.setTimeout(240000);
+const rej = (p) => p.evaluate(() => (globalThis.__qcRejected || []).map(r => r.why));
+test('forged relay messages are rejected; signed + booked flow still works', async ({ browser }) => {
+  const opt = { viewport: { width: 390, height: 844 }, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] };
+  const ctx = await newCtx(browser, opt);
+  const d = await ctx.newPage(), a = await ctx.newPage(), r = await ctx.newPage(), x = await ctx.newPage();
+  await d.goto(url('#/driver')); await d.fill('input[name=name]', 'Sec Driver'); await d.fill('input[name=phone]', '7185550199');
+  await d.fill('input[name=car]', 'Black Cadillac XTS'); await d.fill('input[name=plate]', 'T555555C'); await d.click('text=Continue');
+  await d.check('#sim'); await goOnline(d);
+  const did = await d.evaluate(() => JSON.parse(localStorage.getItem('qc_profile_driver')).id);
+  await a.goto(url('#/admin')); await expect(a.locator('#qtabs')).toBeVisible({ timeout: 20000 }); await expect(a.locator('#nd')).toHaveText('1', { timeout: 20000 });
+  // attacker: a plain rider-app page on the same relay, publishing raw (unsigned) and self-signed messages
+  await x.goto(url('#/')); await x.waitForFunction(() => window.__qc);
+  const fake = { id: 't-forged', rider: { id: 'evil', name: 'Evil' }, pickup: { lat: 40.605, lng: -73.755, label: 'Fake St' }, dest: { lat: 40.64, lng: -73.78, label: 'JFK Airport' }, fare: 999, miles: 9, minutes: 20, meters: 15000, pay: 'cash', ts: Date.now() };
+  await x.evaluate(([did, t]) => window.__qc.raw('offer/' + did, { trip: t }), [did, fake]);
+  await x.evaluate(async ([did, t]) => { const S = await import(new URL('sign.js', location.href).href); const k = await S.newKeyPair(); const tt = { ...t, id: 't-forged2', riderPub: k.pub };
+    window.__qc.raw('offer/' + did, await S.sign(k.priv, 'r:' + tt.id, 'offer/' + did, { trip: tt })); }, [did, fake]);
+  await x.evaluate(() => { window.__qc.raw('drivers/evil1', { id: 'evil1', name: 'Fake Driver', status: 'available', lat: 40.6, lng: -73.75, ts: Date.now() }); });
+  await expect.poll(() => rej(d), { timeout: 15000 }).toEqual(expect.arrayContaining(['offer unsigned', 'offer without matching server booking']));
+  await expect(d.locator('#acc')).toHaveCount(0);
+  await expect.poll(() => rej(a)).toContain('presence'); await expect(a.locator('#nd')).toHaveText('1');
+  await d.screenshot({ path: '/workspace/taxi-shots/v7/security-driver-ignored-forged.png' });
+  // real rider books; the driver receives a signed, server-booked offer
+  await r.goto(url('#/rider')); if (await r.locator('#onbskip').count()) await r.click('#onbskip');
+  await r.fill('#gname', 'Sec Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
+  await r.uncheck('#demo'); await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
+  await r.click('#sc [data-sc=jfk]'); await expect(r.locator('#fare')).toHaveText('$75.00', { timeout: 25000 });
+  await r.check('#agree'); await r.click('#req');
+  await expect(d.locator('#acc')).toBeVisible({ timeout: 30000 });
+  const tid = await r.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('roca_server_rides') || '{}')).pop());
+  await x.evaluate((tid) => { window.__qc.raw('trip/' + tid, { type: 'assign', driver: 'evil1', name: 'Fake' }); window.__qc.raw('trip/' + tid, { type: 'complete', driver: 'evil1', fare: 1, lines: [['x', 1]], meters: 1, seconds: 1 }); }, tid);
+  await expect.poll(() => rej(r), { timeout: 10000 }).toEqual(expect.arrayContaining(['assign', 'complete']));
+  await expect(r.locator('#done')).toHaveCount(0);
+  await d.click('#acc'); await expect(r.locator('#st')).toBeVisible({ timeout: 20000 });
+  await expect(a.locator('#tl')).toContainText('driver en route', { timeout: 15000 });
+  await r.screenshot({ path: '/workspace/taxi-shots/v7/security-rider-signed-driver.png' });
+});
