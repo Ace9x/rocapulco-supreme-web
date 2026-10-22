@@ -48,7 +48,11 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     await expect(p.locator('#qn')).toHaveText('1'); await expect(p.locator('#open [data-a]')).toHaveCount(2);
     await expect(p.locator('#dfresh .row.stale')).toContainText('Priya'); await expect(p.locator('.mk.stale')).toHaveCount(1);
     await p.waitForTimeout(1500); await p.screenshot({ path: OUT + `${tag}-09-dispatch-queue.png` });
-    await p.locator('#open [data-a]').first().click(); await p.click('#qtabs [data-q=assigned]'); await expect(p.locator('#qa')).toHaveText('1');
+    await expect(p.locator('#dfresh .row.dragok')).toHaveCount(2); await expect(p.locator('#dfresh .row.stale')).not.toHaveClass(/dragok/);
+    const pinF = await p.locator('.mk.car svg').first().evaluate(e => getComputedStyle(e).filter); expect(pinF).toContain('grayscale');
+    if (!mob) { const sb = await p.locator('#sheet').boundingBox(); expect(sb.y + sb.height).toBeGreaterThan(vp.height - 30); }
+    await p.locator('#open .card.assign').dragTo(p.locator('#dfresh [data-fd=dx3]')); await expect(p.locator('#qa')).toHaveText('1'); await expect(p.locator('#qn')).toHaveText('0');
+    await p.click('#qtabs [data-q=assigned]'); await expect(p.locator('#open')).toContainText('assigned to Luis');
     await p.screenshot({ path: OUT + `${tag}-10-dispatch-assigned.png` });
     await p.evaluate(() => localStorage.setItem('qc_profile_driver', JSON.stringify({ name: 'Luis Ortiz', phone: '7185550111', car: 'Cadillac Escalade', plate: 'T778812C', id: 'drv-x' })));
     await p.goto(u('#/driver')); await expect(p.locator('#tg')).toBeVisible({ timeout: 20000 }); await p.waitForTimeout(1000); await p.screenshot({ path: OUT + `${tag}-11-driver-steel.png` });

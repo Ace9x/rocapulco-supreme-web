@@ -637,6 +637,12 @@ function admin() {
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
   import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0;
+  function assignTo(tid, did) {
+    const t = trips.get(tid), d = drivers.get(did); if (!t || !d) return;
+    bus.publish('trip/' + tid, { type: 'assign', driver: d.id, name: d.name });
+    bus.publish('offer/' + d.id, { trip: t.full });
+    t.assigned = d.name; notify(`Assigned ${d.name} to ${t.rider}`); draw();
+  }
   const avail = () => { const now = Date.now(); return [...drivers.values()].filter(d => d.status === 'available' && now - d.ts < 30000); };
   const draw = () => {
     const now = Date.now(), on = [...drivers.values()].filter(d => d.status !== 'offline' && now - d.ts < 300000); // kept 5 min, grey after 60 s
@@ -660,13 +666,17 @@ function admin() {
       $('#open').innerHTML = shown.length ? shown.map(t => { const canAssign = qtab !== 'ontrip' && open.includes(t);
         return `<div class="card assign" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}<div class="muted">${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
         ${canAssign ? `<div class="drvs">${av.length ? av.map(d => ({ d, e: etaOf(d, t.pickup) })).sort((a, b) => a.e - b.e).slice(0, 3).map(({ d, e }, k) => `<button class="btn sm ${k ? 'alt' : 'steel'}" data-a="${esc(d.id)}">${k ? '' : ic('check', 'sm')}Assign ${esc(d.name)} · ${fmtMin(e)}</button>`).join('') : '<span class="muted">' + ic('alert', 'sm') + ' No available drivers online</span>'}</div>` : ''}</div>`; }).join('') : `<p class="muted">${{ new: 'No riders waiting.', assigned: 'Nothing assigned right now.', ontrip: 'No rides in progress.' }[qtab]}</p>`;
-      $('#open').querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
-        const tid = b.closest('[data-t]').dataset.t, t = trips.get(tid), d = drivers.get(b.dataset.a); if (!t || !d) return;
-        bus.publish('trip/' + tid, { type: 'assign', driver: d.id, name: d.name });
-        bus.publish('offer/' + d.id, { trip: t.full });
-        t.assigned = d.name; notify(`Assigned ${d.name} to ${t.rider}`); draw();
-      });
+      $('#open').querySelectorAll('[data-a]').forEach(b => b.onclick = () => assignTo(b.closest('[data-t]').dataset.t, b.dataset.a));
+      // drag-to-assign: drag a waiting ride onto a driver row, or a driver row onto a ride
+      $('#open').querySelectorAll('.card.assign').forEach(c => { const tid = c.dataset.t; if (!open.includes(trips.get(tid))) return;
+        c.draggable = true; c.ondragstart = (e) => { e.dataTransfer.setData('text/plain', 't:' + tid); c.classList.add('dragging'); }; c.ondragend = () => c.classList.remove('dragging');
+        c.ondragover = (e) => { e.preventDefault(); c.classList.add('drop'); }; c.ondragleave = () => c.classList.remove('drop');
+        c.ondrop = (e) => { e.preventDefault(); c.classList.remove('drop'); const v = e.dataTransfer.getData('text/plain'); if (v.startsWith('d:')) assignTo(tid, v.slice(2)); }; });
     }
+    if ($('#dfresh')) $('#dfresh').querySelectorAll('[data-fd]').forEach(r => { const d = drivers.get(r.dataset.fd); if (!d || !av.includes(d)) return;
+      r.draggable = true; r.classList.add('dragok'); r.ondragstart = (e) => e.dataTransfer.setData('text/plain', 'd:' + d.id);
+      r.ondragover = (e) => { e.preventDefault(); r.classList.add('drop'); }; r.ondragleave = () => r.classList.remove('drop');
+      r.ondrop = (e) => { e.preventDefault(); r.classList.remove('drop'); const v = e.dataTransfer.getData('text/plain'); if (v.startsWith('t:')) assignTo(v.slice(2), d.id); }; });
     $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>${ic('alert')} ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}${r.reason ? ' · ' + esc(r.reason.replace('_', ' ')) : ''}${r.fare ? ' · ' + money(r.fare) : ''}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
     $('#tl') && ($('#tl').innerHTML = list.map(t => `<div class="card hist"><div><b>${esc(t.rider)} → ${esc(t.to)}</b><div class="muted">${esc(t.state)}${t.driver ? ' · ' + esc(t.driver) : ''} · ${new Date(t.ts).toLocaleTimeString()}</div></div><b>${money(t.fare || 0)}</b></div>`).join(''));
   };

@@ -165,3 +165,7 @@ body[data-app=driver] .price,body[data-app=dispatch] .price{color:#E6C25A}
 .sp-word{font:700 20px var(--font);letter-spacing:.32em;color:#F5D77A;opacity:0;animation:rise .5s .6s both}.sp-word span{color:#D4AF37}
 .sp-line{width:0;height:1.5px;background:linear-gradient(90deg,transparent,#D4AF37,transparent);animation:grow .7s .7s forwards}@keyframes grow{to{width:180px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}#splash{display:none}}
+@media(min-width:800px){#sheet{max-height:none}}
+body[data-app=dispatch] .mk.car svg{filter:grayscale(1) brightness(1.25) contrast(1.05)}
+.card.assign[draggable=true]{cursor:grab}.card.assign.dragging{opacity:.5}.drop{outline:2px dashed var(--steel);outline-offset:2px;background:rgb(156 163 175/.08)}
+.dfresh .row.dragok{cursor:grab}.dfresh .row.dragok::after{content:"⠿";color:var(--text-3);margin-left:6px}
