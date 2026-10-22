@@ -1,13 +1,25 @@
+import { passengerHours } from './hours.js';
 import { estimateFare, ratesFor, money, offerEconomics, split, DRIVER_SHARE, DISPATCH_PHONE, DISPATCH_TEL, PAYMENTS, TLC_BASE, POPULAR } from './fare.js';
 import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction, rankByRoad, homeFilterOk, cancelStatus, noShowAllowed, scheduleState, smooth } from './dispatch.js';
 import { createBus } from './data.js';
 import { ic } from './icons.js';
 import * as learn from './learn.js';
+import { sign, verify, newKeyPair, samePub } from './sign.js';
+import { AIRPORTS, LANDMARKS, meetNote, addressVariants, localMatches } from './places.js';
+import { initI18n, lang, setLang } from './i18n.js';
 
 // Three separate apps share this code: riders (main URL), /driver/ and /dispatch/ (set window.ROC_APP before loading).
 const APP = ['driver', 'dispatch'].includes(globalThis.ROC_APP) ? globalThis.ROC_APP : 'rider';
 document.body.dataset.app = APP;
 const Q = new URLSearchParams(location.search);
+// deep links: ?to=JFK&car=suv&ref=CODE work in the query or after the hash (#/rider?to=LGA)
+const DL = new URLSearchParams([...Q, ...new URLSearchParams(location.hash.split('?')[1] || '')]);
+const SITE_URL = 'https://ace9x.github.io/rocapulco-supreme-web/';
+const GOOGLE_REVIEW_URL = ''; // Fan: paste the Google Business review link here; the button stays hidden until then
+const myRef = () => { let c = localStorage.getItem('qc_myref'); if (!c) { c = 'R' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => '23456789ABCDEFGHJKMNPQRSTUVWXYZ'[b % 31]).join(''); localStorage.setItem('qc_myref', c); } return c; };
+{ const r = (DL.get('ref') || '').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 12); if (r && r !== localStorage.getItem('qc_myref') && !localStorage.getItem('qc_ref_in')) localStorage.setItem('qc_ref_in', JSON.stringify({ code: r, at: new Date().toISOString() })); }
+const refLink = (code = myRef()) => SITE_URL + '?ref=' + encodeURIComponent(code);
+let installEvt = null; addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
 // Live channels: only the production 'nyc' channel on public relays; any other ?ns= is honored only for local (on-device) test mode.
 const NS0 = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
 const NS = Q.get('transport') === 'local' || NS0 === 'nyc' ? NS0 : 'nyc';
@@ -30,6 +42,49 @@ let netT; const setNet = (s) => { const n = $('#net'); if (!n) return; clearTime
 setTimeout(() => { if (/connecting/i.test($('#net')?.textContent || '')) setNet('reconnecting'); }, 6000);
 addEventListener('offline', () => setNet('offline'));
 const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: setNet });
+// ---------- signed relay ----------
+// Public relays carry every message, so nothing that changes a ride is trusted unless it is signed:
+// staff (driver/dispatcher/owner) by a server-registered key, riders by a per-trip key bound to their server booking.
+// Demo drivers live only inside this page (localOnly + a per-page secret), so they can't be spoofed from outside.
+const SIM_SECRET = Math.random().toString(36).slice(2) + Date.now().toString(36);
+const isSim = (m) => m && m._sim === SIM_SECRET;
+let signer = null;                                   // staff signer after sign-in (driver / dispatch apps)
+const riderKeys = new Map(), tripPubs = new Map();   // tripId -> my rider key / trusted rider public key
+const rawPublish = bus.publish.bind(bus); let chain = Promise.resolve();
+bus.publish = (topic, msg, opt = {}) => {
+  if (opt.localOnly || isSim(msg)) return rawPublish(topic, msg, opt);
+  const tid = topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('offer/') ? msg?.trip?.id : topic.startsWith('reports/') ? msg?.trip : null;
+  const rk = !signer && tid && riderKeys.get(tid);
+  const job = async () => { let out = msg; try { if (signer) out = await sign(signer.priv, signer.kid, topic, msg); else if (rk) out = await sign(rk.priv, 'r:' + tid, topic, msg); } catch (e) { console.warn('sign failed', e.message); } rawPublish(topic, out, opt); };
+  chain = chain.then(job, job);
+};
+const vcache = new Map();
+// -> null (unsigned / bad / stale) | { staff, role, name, kid } | { rider, tid, selfCert }
+function check(topic, m) {
+  const g = m?.sig; if (!g?.kid) return Promise.resolve(null);
+  const ck = topic + '|' + g.s; if (vcache.has(ck)) return vcache.get(ck);
+  const p = (async () => {
+    if (g.kid.startsWith('r:')) { const tid = g.kid.slice(2);
+      // staff who didn't see the booking live (page opened later) look the rider key up on the server
+      if (!tripPubs.has(tid) && signer) { const c = await import('./cloud.js'); const b = await c.verifyBooking(tid).catch(() => null); if (b?.rider_pub) tripPubs.set(tid, b.rider_pub); }
+      const known = tripPubs.get(tid), self = m.trip?.id === tid ? m.trip.riderPub : null, pub = known || self;
+      if (known && self && !samePub(known, self)) return null;
+      return pub && await verify(pub, topic, m) ? { rider: true, tid, selfCert: !known } : null; }
+    const c = await import('./cloud.js'); const k = await c.staffKey(g.kid).catch(() => null);
+    return k && await verify(k.pubkey, topic, m) ? { staff: true, role: k.role, name: k.name, kid: g.kid } : null; })();
+  vcache.set(ck, p); if (vcache.size > 3000) vcache.delete(vcache.keys().next().value); return p;
+}
+const STAFF = ['driver', 'dispatcher', 'owner'], DISPATCHERS = ['dispatcher', 'owner'];
+// Rider booking must exist on the server with the same rider key and (about) the same fare before staff trust it.
+async function bookingOk(t) {
+  if (!t?.id || !t.riderPub) return false;
+  const c = await import('./cloud.js');
+  for (let i = 0; i < 3; i++) { const b = await c.verifyBooking(t.id).catch(() => null);
+    if (b) return samePub(b.rider_pub, t.riderPub) && !/cancel/.test(b.status || '') && (b.fare_estimate == null || Math.abs(+b.fare_estimate - +t.fare) <= Math.max(1, +t.fare * 0.05));
+    await wait(1500); }
+  return false;
+}
+const rejected = (why, m) => { (globalThis.__qcRejected ||= []).push({ why, type: m?.type || (m?.trip ? 'offer' : 'msg') }); console.info('ignored unverified message:', why); };
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
@@ -73,10 +128,23 @@ function pack(coords, distance, duration, steps, real) {
   steps.forEach(s => s.idx = nearestIndex(coords, s.loc).index);
   return { coords, cum, distance, duration, steps, real, latlngs: coords.map(c => [c[1], c[0]]) };
 }
-async function geocode(q, near) {
+const BOROUGHS = /^(Queens|Brooklyn|Manhattan|The Bronx|Bronx|Staten Island)$/;
+async function geocode1(q, near) {
   const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lat=${near.lat}&lon=${near.lng}`);
   const j = await r.json();
-  return j.features.map(f => { const p = f.properties; return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label: [p.name, p.housenumber && p.street ? p.housenumber + ' ' + p.street : p.street, p.district || p.city, p.state].filter(Boolean).join(', ') }; });
+  return j.features.map(f => { const p = f.properties, boro = [p.district, p.city, p.county].find(x => BOROUGHS.test(x || ''));
+    // NYC: show the borough (Atlantic Ave Brooklyn vs Queens); Long Island: show the county (Nassau vs Suffolk)
+    const area = boro || [p.city, p.county && p.county !== p.city ? p.county : null].filter(Boolean).join(', ');
+    return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label: [p.name, p.housenumber && p.street ? p.housenumber + ' ' + p.street : p.street, area, p.state].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(', ') }; });
+}
+// Queens-style addresses ("12345 101 Ave"), neighborhood-as-city ("…, Astoria") and local landmarks first.
+async function geocode(q, near) {
+  const local = localMatches(q).map(l => ({ lat: l.lat, lng: l.lng, label: l.label, local: true }));
+  const vs = addressVariants(q), res = await Promise.allSettled(vs.map(v => geocode1(v, near)));
+  const seen = new Set(), out = [...local];
+  for (const r of res) if (r.status === 'fulfilled') for (const x of r.value) { const k = x.label + x.lat.toFixed(4); if (!seen.has(k)) { seen.add(k); out.push(x); } }
+  if (!out.length && res.every(r => r.status === 'rejected')) throw new Error('search unavailable');
+  return out.slice(0, 8);
 }
 async function reverse(p) {
   try { const j = await (await fetch(`https://photon.komoot.io/reverse?lat=${p.lat}&lon=${p.lng}`)).json(); const x = j.features[0].properties; return [x.housenumber && x.street ? x.housenumber + ' ' + x.street : x.name || x.street, x.district || x.city].filter(Boolean).join(', '); }
@@ -96,7 +164,7 @@ function autocomplete(input, list, near, onPick) {
   input.addEventListener('input', () => {
     clearTimeout(t); const q = input.value.trim(); if (q.length < 3) { list.innerHTML = ''; return; }
     t = setTimeout(async () => {
-      try { const rs = await geocode(q, near()); list.innerHTML = rs.map((r, i) => `<li data-i="${i}">${esc(r.label)}</li>`).join('') || '<li class="muted">No results</li>';
+      try { const rs = await geocode(q, near()); list.innerHTML = rs.map((r, i) => `<li data-i="${i}">${r.local ? ic('pin', 'sm') + ' ' : ''}${esc(r.label)}</li>`).join('') || '<li class="muted">No results</li>';
         list.querySelectorAll('li[data-i]').forEach(li => li.onclick = () => { const r = rs[+li.dataset.i]; input.value = r.label; list.innerHTML = ''; onPick(r); });
       } catch { list.innerHTML = '<li class="muted">Search unavailable — tap the map instead</li>'; }
     }, 450); // Photon fair use: debounce typing
@@ -135,7 +203,7 @@ function chatBox(box, btn, tripId, role) {
     $('#cf').onsubmit = (e) => { e.preventDefault(); const v = $('#ci').value.trim(); if (!v) return; bus.publish('trip/' + tripId, { type: 'chat', from: role, text: v, id: uid() }); $('#ci').value = ''; };
     const ms = $('#msgs'); ms.scrollTop = ms.scrollHeight; };
   btn.onclick = () => { open = !open; if (!open) box.innerHTML = ''; render(); open && $('#ci')?.focus(); };
-  sub('trip/' + tripId, (m) => { if (m.type === 'chat') { msgs.push(m); if (m.from !== role) { navigator.vibrate?.(100); if (!open) notify('New message: ' + m.text); } render(); } });
+  vsub('trip/' + tripId, (m, _t, v) => { if (m.type === 'chat' && !(isSim(m) || (m.from === 'rider' ? v?.rider && !v.selfCert : v?.staff))) return rejected('chat', m); if (m.type === 'chat') { msgs.push(m); if (m.from !== role) { navigator.vibrate?.(100); if (!open) notify('New message: ' + m.text); } render(); } });
   render();
 }
 
@@ -147,28 +215,30 @@ class SimDriver {
     const [name, car, plate] = NAMES[i % 4];
     Object.assign(this, { id: 'sim-' + uid(), name: name + ' (demo)', car, plate: plate.replace('xx', String(10 + i * 17)), owner, sim: true, status: 'available', lat: near.lat + r * Math.sin(a), lng: near.lng + r * Math.cos(a) * 1.3, rating: 4.9 });
     this.beat = setInterval(() => this.presence(), 3000); this.presence();
-    this.unsub = bus.subscribe('offer/' + this.id, (m) => this.onOffer(m.trip));
+    this.unsub = bus.subscribe('offer/' + this.id, (m) => { if (isSim(m)) this.onOffer(m.trip); });
   }
   info() { const { id, name, car, plate, sim, owner, status, lat, lng, rating } = this; return { id, name, car, plate, sim, owner, status, lat, lng, rating, ts: Date.now() }; }
-  presence() { bus.publish('drivers/' + this.id, this.info(), { localOnly: true }); }
+  presence() { this.pub('drivers/' + this.id, this.info()); }
+  pub(topic, m) { bus.publish(topic, { ...m, _sim: SIM_SECRET }, { localOnly: true }); }
   async onOffer(trip) {
-    if (this.status !== 'available') return bus.publish('trip/' + trip.id, { type: 'decline', driver: this.id });
+    if (this.status !== 'available') return this.pub('trip/' + trip.id, { type: 'decline', driver: this.id });
     this.status = 'busy'; await wait(1500);
-    let replied = false; const un = bus.subscribe('trip/' + trip.id, (m) => { if (m.type === 'chat' && m.from === 'rider' && !replied) { replied = true; setTimeout(() => bus.publish('trip/' + trip.id, { type: 'chat', from: 'driver', text: 'Got it, see you soon! (demo driver)', id: uid() }), 1200); } if (m.type === 'cancel') this.cancelled = true; if (m.type === 'edit') Object.assign(trip, { dest: m.dest, fare: m.fare, lines: m.lines }); });
-    bus.publish('trip/' + trip.id, { type: 'accept', driver: this.info() });
+    let replied = false; const un = bus.subscribe('trip/' + trip.id, (m) => { if (m.type === 'chat' && m.from === 'rider' && !replied) { replied = true; setTimeout(() => this.pub('trip/' + trip.id, { type: 'chat', from: 'driver', text: 'Got it, see you soon! (demo driver)', id: uid() }), 1200); } if (m.type === 'cancel') this.cancelled = true; if (m.type === 'edit') Object.assign(trip, { dest: m.dest, fare: m.fare, lines: m.lines }); });
+    this.pub('trip/' + trip.id, { type: 'accept', driver: this.info() });
     await this.drive(await route(this, trip.pickup), trip); if (this.cancelled) { un(); this.status = 'available'; this.cancelled = false; return; }
-    bus.publish('trip/' + trip.id, { type: 'arrived', driver: this.id }); await wait(3000);
-    bus.publish('trip/' + trip.id, { type: 'start', driver: this.id });
+    this.pub('trip/' + trip.id, { type: 'arrived', driver: this.id }); await wait(3000);
+    this.pub('trip/' + trip.id, { type: 'start', driver: this.id });
     const rt = await route(trip.pickup, trip.dest); await this.drive(rt, trip);
     const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked
-    bus.publish('trip/' + trip.id, { type: 'complete', driver: this.id, lines: f.lines, fare: f.total, meters: rt.distance, seconds: rt.duration });
+    this.pub('trip/' + trip.id, { type: 'complete', driver: this.id, lines: f.lines, fare: f.total, meters: rt.distance, seconds: rt.duration });
+    setTimeout(() => this.pub('trip/' + trip.id, { type: 'paid', driver: this.id, method: trip.pay || 'cash', fare: f.total }), 2500);
     this.status = 'available'; un();
   }
   async drive(rt, trip) {
     for (let m = 0; m < rt.distance && !this.cancelled; m += 15 * SPEED) {
       Object.assign(this, pointAlong(rt.coords, rt.cum, m));
       const p = progress(rt, this);
-      bus.publish('trip/' + trip.id, { type: 'loc', lat: this.lat, lng: this.lng, eta: p.eta, remain: p.remain }, { localOnly: true });
+      this.pub('trip/' + trip.id, { type: 'loc', lat: this.lat, lng: this.lng, eta: p.eta, remain: p.remain });
       await wait(1000);
     }
     Object.assign(this, pointAlong(rt.coords, rt.cum, rt.distance));
@@ -181,10 +251,14 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
 let cleanup = [];
 function reset() { cleanup.forEach(f => f()); cleanup = []; layer.clearLayers(); }
 const sub = (p, cb) => cleanup.push(bus.subscribe(p, cb));
+const vsub = (p, cb) => sub(p, async (m, t) => cb(m, t, await check(t, m)));
 function every(fn, ms) { const h = setInterval(fn, ms); cleanup.push(() => clearInterval(h)); }
 const callBtn = (label = `Call dispatch ${DISPATCH_PHONE}`) => `<a class="btn alt call" href="tel:${DISPATCH_TEL}">${ic('phone')}${label}</a>`;
 const PAY_NOTE = { cash: 'Hand cash to your driver.', card: "Pay on your driver's card reader in the car.", zelle: "Send by Zelle to the driver's number shown at drop-off.", venmo: 'Send by Venmo to your driver at drop-off.' };
-const payLink = (m, amt) => m === 'venmo' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://venmo.com/?txn=pay&amount=${amt.toFixed(2)}&note=Rocapulco%20ride">Open Venmo</a>` : m === 'zelle' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://www.zellepay.com/">Open Zelle (use your bank app)</a>` : '';
+const payLink = (m, amt, card) => card?.pay_handle && card.pay_kind === m ? (m === 'venmo'
+    ? `<a class="btn alt" id="paylink" target="_blank" rel="noopener" href="https://venmo.com/?txn=pay&recipients=${encodeURIComponent(card.pay_handle.replace(/^@/, ''))}&amount=${amt.toFixed(2)}&note=Rocapulco%20ride">${ic('check', 'sm')}Pay ${esc(card.pay_handle)} on Venmo (verified)</a>`
+    : `<button class="btn alt" id="paylink" data-copy="${esc(card.pay_handle)}">${ic('check', 'sm')}Zelle ${esc(card.pay_handle)} (verified) · tap to copy</button>`) : payLink0(m, amt);
+const payLink0 = (m, amt) => m === 'venmo' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://venmo.com/?txn=pay&amount=${amt.toFixed(2)}&note=Rocapulco%20ride">Open Venmo</a>` : m === 'zelle' ? `<a class="btn alt" target="_blank" rel="noopener" href="https://www.zellepay.com/">Open Zelle (use your bank app)</a>` : '';
 const initials = (n = '') => n.replace(/\(.*?\)/g, '').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'R';
 const RATE_TAGS = ['Clean car', 'Safe driving', 'On time', 'Friendly', 'Knew the route'];
 const VCLASS = { sedan: { name: 'Black Sedan', seats: 4, icon: 'car', test: () => true }, suv: { name: 'Black SUV', seats: 6, icon: 'suv', test: (d) => /escalade|suburban|xt6|tahoe|yukon|navigator|suv|van|sienna|odyssey/i.test(d.car || '') } };
@@ -193,7 +267,11 @@ const carArt = (k) => `<img src="${ART}rocapulco-car-${k === 'suv' ? '3q' : 'sid
 const PAY_IC = { cash: 'cash', card: 'card', zelle: 'bank', venmo: 'phone' };
 const POLICY = 'No surge, ever. No booking or service fees. If a driver cancels, you are never charged.';
 const tabs = () => '';
+const PLACES = [['home', 'Home', 'home'], ['work', 'Work', 'flag'], ['hospital', 'Hospital', 'plus'], ['court', 'Court', 'bank']];
 const TERMS_V = '2026-10-22';
+const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map(b => b.toString(16).padStart(2, '0')).join('');
+const newPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, '0');
+const licRow = (k, v) => `<div class="row"><span>${k}</span><span>${v ? esc(v) : '<span class="tlc-blank" aria-label="not provided"></span>'}</span></div>`;
 const tlcLine = () => `<span class="tlc">TLC Base # ${TLC_BASE ? esc(TLC_BASE) : '<span class="tlc-blank" aria-label="to be added"></span>'}</span>`;
 // Trust banner shown at every money moment (principle 12): exact locked price, paid once, to the driver.
 const trustBanner = (amt, pay) => `<div class="trust" id="trust" role="note">${ic('shield')}<div><b>Pay ${money(amt)} once — locked price</b><span>Paid ${esc(PAYMENTS[pay] || 'directly')} to your driver at drop-off. Never pay twice, never pay extra in cash.</span></div></div>`;
@@ -234,6 +312,7 @@ function home() {
   <div id="faresheet" hidden class="card"><div class="row"><span>Black Sedan</span><span>$3.50 + $2.50/mi + $0.40/min · $10 min</span></div><div class="row"><span>Black SUV</span><span>1.5× · $15 min · JFK $112.50 · LGA $123.75</span></div><div class="row"><span>Payment</span><span>Cash, card, Zelle or Venmo, to the driver</span></div><p class="fine">${POLICY}</p></div>
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
   ${callBtn()}
+  <a class="btn link drivecta" id="drivecta" href="driver/join/">${ic('car', 'sm')}Drive with us — keep 70% of every fare</a>
   <p class="fine legal">Licensed NYC car service · ${tlcLine()} · <a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a></p>`;
   $('#fares').onclick = () => { const f = $('#faresheet'); f.hidden = !f.hidden; $('#fares').setAttribute('aria-expanded', String(!f.hidden)); };
   onboarding();
@@ -252,12 +331,14 @@ function profileForm(role, done) {
 
 // ===== RIDER =====
 function rider() {
-  profileForm('rider', (me) => {
+  // Price first: no form before the quote. Name + phone are asked right above "Request ride".
+  ((done) => done(store.get('profile_rider') || { id: 'rdr-' + uid(), name: '', phone: '', guest: true }))((me) => {
     const drivers = new Map(), dmk = new Map();
     let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true), payM = store.get('pay', 'cash'), vcls = store.get('vclass', 'sedan');
     let pinP, pinD, line, carMk, tick;
-    sub('drivers/+', (d) => {
-      if (d.sim && d.owner !== me.id) return;
+    vsub('drivers/+', (d, _t, v) => {
+      if (isSim(d) ? d.owner !== me.id : !(v?.staff && STAFF.includes(v.role))) return;
+      const prev = drivers.get(d.id); if (prev && !isSim(d) && prev.kid && prev.kid !== v.kid) return rejected('presence id reuse', d); if (v) d.kid = v.kid;
       drivers.set(d.id, d);
       if (trip) return;
       if (d.status === 'offline') { dmk.get(d.id)?.remove(); dmk.delete(d.id); return; }
@@ -282,32 +363,44 @@ function rider() {
     function plan() {
       trip = null; clearInterval(tick); dmk.forEach(m => m.addTo(layer));
       const sched = store.get('scheduled', []);
+      const recent = store.get('history_rider', []).filter((r, i, a) => r.to && r.dlat != null && a.findIndex(x => x.to === r.to) === i).slice(0, 5);
       const pops = learn.popularPickups(pickup || QUEENS, { hour: new Date().getHours() }), bh = learn.busyHour();
-      sheet.innerHTML = `${tabs('rider')}<div class="hi"><span>Hi ${esc(me.name.split(' ')[0])}</span><span class="hl"><a href="#" id="wal">${ic('wallet')}Wallet</a><a href="#" id="hist">${ic('history')}History</a></span></div>
+      sheet.innerHTML = `${tabs('rider')}<div class="hi"><span>${me.name ? 'Hi ' + esc(me.name.split(' ')[0]) : 'Hi there'}</span><span class="hl"><a href="#" id="wal">${ic('wallet')}Wallet</a><a href="#" id="hist">${ic('history')}History</a></span></div>
       <h2 class="where">Where to?</h2>
       <div class="routebox"><div class="rte"><span class="dot a"></span><span class="ln"></span><span class="dot b"></span></div><div class="grow">
       <div class="field"><input id="pu" placeholder="Pickup — locating…" aria-label="Pickup"><button id="gps" title="Use my location" aria-label="Use my location">${ic('locate')}</button></div><ul id="pul" class="sugg"></ul>
       <div class="field"><input id="de" placeholder="Where to?" aria-label="Destination"></div><ul id="del" class="sugg"></ul></div></div>
-      <div class="shortcuts" id="sc">${['home', 'work'].map(k => { const pl = store.get('place_' + k); return `<button class="ds-chip sc" data-sc="${k}">${ic(k === 'home' ? 'home' : 'flag')}${pl ? (k === 'home' ? 'Home' : 'Work') : 'Set ' + (k === 'home' ? 'Home' : 'Work')}</button>`; }).join('')}<button class="ds-chip sc air" data-sc="jfk">${ic('plane')}JFK <b>${money(ratesFor(vcls).jfk).replace('.00', '')}</b></button><button class="ds-chip sc air" data-sc="lga">${ic('plane')}LGA <b>${money(ratesFor(vcls).laguardia)}</b></button></div>
+      <div class="shortcuts" id="sc"><button class="ds-chip sc air" data-sc="jfk">${ic('plane')}JFK <b>${money(ratesFor(vcls).jfk).replace('.00', '')}</b></button><button class="ds-chip sc air" data-sc="lga">${ic('plane')}LGA <b>${money(ratesFor(vcls).laguardia)}</b></button><button class="ds-chip sc" id="terms-open" aria-expanded="false">${ic('plane')}Terminals</button>${PLACES.map(([k, n, i]) => { const pl = store.get('place_' + k); return `<button class="ds-chip sc" data-sc="${k}">${ic(i)}${pl ? n : 'Set ' + n}</button>`; }).join('')}</div>
+      <div id="airp" class="card airp" hidden></div>
+      ${recent.length ? `<div class="lbl">${ic('history')}Recent trips</div><div class="pop" id="recent">${recent.map((r, i) => `<button class="ds-chip" data-rc="${i}">${ic('history')}${esc(r.to.split(',')[0])}</button>`).join('')}</div>` : ''}
+      <div class="lbl">${ic('pin')}Landmarks</div><div class="pop" id="lmk">${LANDMARKS.map((l, i) => `<button class="ds-chip" data-lm="${i}">${esc(l.k)}</button>`).join('')}</div>
       ${pops.length ? `<div class="lbl">${ic('spark')}Popular pickups near you</div><div class="pop" id="pps">${pops.map((d, i) => `<button class="ds-chip" data-pp="${i}">${ic('pin')}${esc(d.label)}</button>`).join('')}</div>` : ''}
       <div class="lbl">${ic('flag')}Popular destinations</div><div class="pop" id="pop">${POPULAR.map((d, i) => `<button class="ds-chip" data-p="${i}">${esc(d.k)}</button>`).join('')}</div>
-      <input id="note" placeholder="Note for driver (e.g. blue door, by the bodega)" maxlength="120" value="${esc(pickup?.note || '')}">
+      <input id="note" placeholder="Note for driver (e.g. blue door, by the bodega)" maxlength="120" value="${esc(pickup?.note0 ?? pickup?.note ?? '')}">
+      <div class="two eq"><input id="cross" placeholder="Cross street" maxlength="60" aria-label="Cross street" value="${esc(pickup?.cross || '')}"><input id="side" placeholder="Which side / entrance" maxlength="60" aria-label="Which side / entrance" value="${esc(pickup?.side || '')}"></div>
       <p class="fine">Drag the gold <b>A</b> pin to your exact spot. Tap the map to set the destination.</p>
       <div class="seg"><button id="wnow" class="on">${ic('clock')}Now</button><button id="wsch">Schedule</button></div><input id="when" type="datetime-local" hidden>
       <div id="vc" class="vclass"></div>
       <div class="paysel"><span class="lbl">${ic('wallet')}Pay driver with</span><div class="seg" id="pay">${Object.entries(PAYMENTS).map(([k, v]) => `<button data-m="${k}" class="${k === payM ? 'on' : ''}">${ic(PAY_IC[k])}${v}</button>`).join('')}</div></div>
       ${bh ? `<p class="fine learn" id="bh">${ic('spark')}${bh.busy ? 'Busy hour' : 'Typical hour'}: riders usually get a driver in about ${fmtMin(bh.avgWaitSec)} at this time (learned from ${bh.samples} past rides).</p>` : ''}
+      <label class="tog"><input type="checkbox" id="wav" ${store.get('wav', false) ? 'checked' : ''}> ${ic('user', 'sm')} I need a wheelchair-accessible vehicle (ramp or lift)</label>
       <label class="tog"><input type="checkbox" id="demo" ${demo ? 'checked' : ''}> Demo mode — show simulated drivers (clearly labeled)</label>
       <div id="est"></div>
       <label class="tog consent"><input type="checkbox" id="agree" ${store.get('consent')?.v === TERMS_V ? 'checked' : ''}> I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms &amp; fare policy</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a></label>
+      <div class="card contact" id="contact"><div class="lbl">${ic('user', 'sm')}Your name and phone — your driver texts or calls this number</div>
+        <div class="two eq"><input id="gname" name="name" placeholder="Name" autocomplete="name" maxlength="60" value="${esc(me.name)}" aria-label="Your name"><input id="gphone" name="phone" type="tel" placeholder="Mobile phone" autocomplete="tel" maxlength="20" value="${esc(me.phone)}" aria-label="Your mobile phone"></div>
+        <details id="acctd"><summary class="fine">Have an account? Sign in instead</summary><div id="racct"></div></details></div>
       <button class="btn gold big" id="req" disabled>Request ride</button>
       ${sched.length ? `<h3>Upcoming</h3>${sched.map(s => `<div class="card hist sched"><div><b>${esc(s.dest.label.split(',')[0])}</b><div class="muted">${new Date(s.pickupAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })} · driver search starts 30 min before</div></div><button class="btn link sm" data-x="${s.id}">Cancel</button></div>`).join('')}` : ''}`;
+      sheet.querySelectorAll('#recent [data-rc]').forEach(b => b.onclick = () => { const r = recent[+b.dataset.rc]; setDest({ lat: r.dlat, lng: r.dlng, label: r.to }, true); });
+      sheet.querySelectorAll('#lmk [data-lm]').forEach(b => b.onclick = () => { const l = LANDMARKS[+b.dataset.lm]; setDest(l, true); });
+      $('#terms-open').onclick = () => { const box = $('#airp'); box.hidden = !box.hidden; $('#terms-open').setAttribute('aria-expanded', String(!box.hidden)); if (!box.hidden) airPicker(box); };
       sheet.querySelectorAll('#sc [data-sc]').forEach(b => b.onclick = () => { const k = b.dataset.sc;
         if (k === 'jfk' || k === 'lga') return setDest(POPULAR[k === 'jfk' ? 0 : 1], true);
         const pl = store.get('place_' + k);
         if (pl) return setDest(pl, true);
         const src = dest || pickup; if (!src) return notify('Set a pickup or destination first');
-        store.set('place_' + k, { lat: src.lat, lng: src.lng, label: src.label }); notify(`${k === 'home' ? 'Home' : 'Work'} saved: ${(src.label || '').split(',')[0]}`); plan(); });
+        store.set('place_' + k, { lat: src.lat, lng: src.lng, label: src.label }); notify(`${PLACES.find(p => p[0] === k)[1]} saved: ${(src.label || '').split(',')[0]}`); plan(); });
       sheet.querySelectorAll('#pps [data-pp]').forEach(b => b.onclick = () => { const d = pops[+b.dataset.pp]; setPickup(d, d.label); });
       $('#wal').onclick = (e) => { e.preventDefault(); wallet(); };
       renderClasses();
@@ -317,16 +410,41 @@ function rider() {
       sheet.querySelectorAll('#pay [data-m]').forEach(b => b.onclick = () => { payM = b.dataset.m; store.set('pay', payM); sheet.querySelectorAll('#pay button').forEach(x => x.classList.toggle('on', x === b)); });
       $('#gps').onclick = locate; $('#hist').onclick = (e) => { e.preventDefault(); history(); };
       $('#demo').onchange = (e) => { demo = e.target.checked; store.set('demo', demo); demo ? spawnSims() : stopSims(); };
-      $('#note').oninput = (e) => { if (pickup) pickup.note = e.target.value; };
+      const syncNote = () => { if (!pickup) return; pickup.note0 = $('#note').value; pickup.cross = $('#cross').value.trim(); pickup.side = $('#side').value.trim();
+        pickup.note = [pickup.note0, pickup.cross && 'Cross st: ' + pickup.cross, pickup.side && 'Side/entrance: ' + pickup.side].filter(Boolean).join(' · '); };
+      ['#note', '#cross', '#side'].forEach(id => $(id).oninput = syncNote);
       $('#wnow').onclick = () => { $('#wnow').classList.add('on'); $('#wsch').classList.remove('on'); $('#when').hidden = true; $('#req').textContent = 'Request ride'; };
       $('#wsch').onclick = () => { $('#wsch').classList.add('on'); $('#wnow').classList.remove('on'); const w = $('#when'); w.hidden = false; const d = new Date(Date.now() + 60 * 60e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); w.min = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16); w.value ||= d.toISOString().slice(0, 16); $('#req').textContent = 'Schedule ride'; };
       sheet.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== b.dataset.x)); plan(); });
+      $('#wav').onchange = (e) => store.set('wav', e.target.checked);
       $('#agree').onchange = (e) => { store.set('consent', e.target.checked ? { v: TERMS_V, at: new Date().toISOString() } : null); syncReq(); };
-      $('#req').onclick = () => { if (store.get('consent')?.v !== TERMS_V) { notify('Please agree to the Terms & Privacy policy first'); return; } $('#when').hidden ? startRequest() : schedule(); };
+      const contact = () => { me.name = $('#gname').value.trim(); me.phone = $('#gphone').value.trim(); if (me.name && me.phone.replace(/\D/g, '').length >= 10) { const { guest, ...keep } = me; store.set('profile_rider', keep); return true; } return false; };
+      ['#gname', '#gphone'].forEach(id => $(id).oninput = () => { contact(); syncReq(); });
+      $('#acctd').ontoggle = () => { if ($('#acctd').open && !$('#racct').childElementCount) import('./cloud.js').then(c => c.mountRiderAccount($('#racct'), m => { if (m?.name && !$('#gname').value) { $('#gname').value = m.name; contact(); syncReq(); } })).catch(() => { $('#racct').textContent = 'Account sign-in is unavailable right now — book as a guest.'; }); };
+      $('#req').onclick = () => { if (!contact()) { notify('Add your name and a 10-digit mobile number so your driver can reach you'); $('#gname').value ? $('#gphone').focus() : $('#gname').focus(); return; } if (store.get('consent')?.v !== TERMS_V) { notify('Please agree to the Terms & Privacy policy first'); return; } $('#when').hidden ? startRequest() : schedule(); };
+      // deep link (?to=JFK&car=suv) lands on a priced quote; applied once per page load
+      if (!plan.dl && DL.get('to')) { plan.dl = true; const to = DL.get('to').trim(), car = (DL.get('car') || '').toLowerCase();
+        if (car === 'suv' || car === 'sedan') { vcls = car; store.set('vclass', car); renderClasses(); }
+        const k = to.toUpperCase(), hit = k === 'JFK' ? POPULAR[0] : k === 'LGA' ? POPULAR[1] : LANDMARKS.find(l => l.k.toLowerCase() === to.toLowerCase()) || POPULAR.find(d => d.k.toLowerCase() === to.toLowerCase());
+        if (hit) setDest(hit, true); else geocode(to, pickup || QUEENS).then(r => r[0] && setDest(r[0], true)).catch(() => {}); }
       if (pickup) { $('#pu').value = pickup.label || ''; } else locate();
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
     }
-    let ready = false; const syncReq = () => { if ($('#req')) $('#req').disabled = !(ready && store.get('consent')?.v === TERMS_V); };
+    let ready = false; const syncReq = () => { if ($('#req')) $('#req').disabled = !(ready && store.get('consent')?.v === TERMS_V); };  // contact is checked on tap so the price never hides behind a form
+    function airPicker(box, st = { ap: 'JFK', dir: 'dep' }) {
+      const A = AIRPORTS[st.ap];
+      box.innerHTML = `<div class="seg" id="apseg">${Object.keys(AIRPORTS).map(k => `<button data-ap="${k}" class="${k === st.ap ? 'on' : ''}">${k}</button>`).join('')}</div>
+        <div class="seg" id="dirseg"><button data-dir="dep" class="${st.dir === 'dep' ? 'on' : ''}">Departures</button><button data-dir="arr" class="${st.dir === 'arr' ? 'on' : ''}">Arrivals</button></div>
+        <div class="terms">${A.terminals.map(([t, label], i) => `<button class="ds-chip" data-tm="${i}">${st.ap === 'LGA' || st.ap === 'EWR' ? 'Terminal ' : ''}${t}</button>`).join('')}</div>
+        <p class="fine" id="meet">${ic('pin', 'sm')} ${esc(meetNote(st.dir))}${A.flat ? '' : ' Newark has no flat rate: standard upfront pricing applies; tolls extra.'}</p>`;
+      box.querySelectorAll('[data-ap]').forEach(b => b.onclick = () => airPicker(box, { ...st, ap: b.dataset.ap }));
+      box.querySelectorAll('[data-dir]').forEach(b => b.onclick = () => airPicker(box, { ...st, dir: b.dataset.dir }));
+      box.querySelectorAll('[data-tm]').forEach(b => b.onclick = async () => { const [t, label, lat, lng] = A.terminals[+b.dataset.tm], pl = { lat, lng, label };
+        if (st.dir === 'dep') await setDest(pl, true);
+        else { setPickup(pl, label); $('#note').value = `Arrivals ${st.ap} ${t} — meet at the app-ride pickup`; syncNoteExt(); $('#de')?.focus(); }
+        box.hidden = true; });
+    }
+    const syncNoteExt = () => $('#note')?.dispatchEvent(new Event('input'));
     function classEta(k) {
       if (!pickup) return null;
       const c = [...drivers.values()].filter(d => d.status === 'available' && VCLASS[k].test(d)).map(d => haversine(d, pickup)).sort((a, b) => a - b)[0];
@@ -393,21 +511,24 @@ function rider() {
     async function startRequest(sched) {
       if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: vcls }); }
       if (sched) { sched.started = true; store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== sched.id)); }
-      trip = { vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [], consent: store.get('consent', null) };
-      sub('trip/' + trip.id, onTrip);
-      bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
-      import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; }).catch(e => console.warn('server booking (relay still live)', e.message));
+      const pin = newPin();
+      trip = { pin, wav: !!$('#wav')?.checked || store.get('wav', false), vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: pickup.note || $('#note')?.value || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [], consent: store.get('consent', null), ref: !store.get('history_rider', []).length ? (JSON.parse(localStorage.getItem('qc_ref_in') || 'null')?.code || null) : null };
+      trip.pinHash = await sha(trip.id + ':' + trip.pin);
+      const rk = await newKeyPair(); riderKeys.set(trip.id, rk); tripPubs.set(trip.id, rk.pub); trip.riderPub = rk.pub;
+      vsub('trip/' + trip.id, onTrip);
+      trip.booked = import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; return true; }).catch(e => { console.warn('server booking failed — real drivers cannot verify this ride', e.message); return false; });
+      await trip.booked; bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
       dispatch('Finding your driver…');
     }
     // Relay messages are public: send only first name + last 4 of the phone (full details stay on the protected server booking).
-    const pub = (t) => ({ consent: t.consent, vclass: t.vclass, pay: t.pay, id: t.id, rider: { id: t.rider.id, name: String(t.rider.name || '').trim().split(/\s+/)[0], phone4: String(t.rider.phone || '').replace(/\D/g, '').slice(-4) }, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
+    const pub = (t) => ({ ref: t.ref || null, pinHash: t.pinHash, wav: !!t.wav, riderPub: t.riderPub, consent: t.consent, vclass: t.vclass, pay: t.pay, id: t.id, rider: { id: t.rider.id, name: String(t.rider.name || '').trim().split(/\s+/)[0], phone4: String(t.rider.phone || '').replace(/\D/g, '').slice(-4) }, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
     async function dispatch(title) {
       dmk.forEach(m => m.remove()); carMk?.remove(); carMk = null; clearInterval(tick);
       const radar = L.marker([pickup.lat, pickup.lng], { icon: icon('<i></i><i></i><i></i><b></b>', 'radar'), zIndexOffset: 950 }).addTo(layer); map.setView(pickup, 15);
       const msgs = ['Contacting nearby chauffeurs…', 'Checking road time to your door…', 'Matching the closest black car…']; let mi = 0;
       const rot = setInterval(() => { if (!$('#ds') || trip?.state !== 'requested') return; $('#ds').textContent = msgs[++mi % msgs.length]; }, 3000);
       const stopRadar = () => { clearInterval(rot); radar.remove(); }; cleanup.push(stopRadar);
-      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="radar-ui" aria-hidden="true"><i></i><i></i><i></i><b>${ic('car')}</b></div><p class="muted" id="ds">Contacting nearby chauffeurs…</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
+      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="radar-ui" aria-hidden="true"><i></i><i></i><i></i><b>${ic('car')}</b></div><p class="muted" id="ds">Contacting nearby chauffeurs…</p><p class="fine">No ETA is shown until a real driver accepts.${trip.wav ? ' Wheelchair-accessible cars only — dispatch can help find one faster.' : ''}</p>${callBtn(`Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
       $('#cx').onclick = () => { stopRadar(); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; plan(); };
       trip.state = 'requested'; trip.driver = null; const t0 = Date.now(), me_t = trip;
       while (trip === me_t && (trip.state === 'requested' || trip.state === 'offered')) {
@@ -416,18 +537,29 @@ function rider() {
           if (trip === me_t && trip.state === 'offered') { trip.excl.push(trip.offerTo); trip.state = 'requested'; bus.publish('trip/' + trip.id, { type: 'timeout', driver: trip.offerTo }); }
           continue;
         }
-        const near = rankDrivers([...drivers.values()].filter(d => VCLASS[trip.vclass || 'sedan'].test(d)), pickup, { exclude: trip.excl }).slice(0, 5);
-        if (!near.length) { if (Date.now() - t0 > 90000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">No online drivers within 9 miles right now. Nothing was charged. Call dispatch — a real person will find you a car.</p>${callBtn()}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
+        const near = rankDrivers([...drivers.values()].filter(d => VCLASS[trip.vclass || 'sedan'].test(d) && (!trip.wav || d.wav)), pickup, { exclude: trip.excl }).slice(0, 5);
+        if (!near.length) { if (Date.now() - t0 > 90000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">${trip.wav ? 'No wheelchair-accessible car is online near you right now.' : 'No online drivers within 9 miles right now.'} Nothing was charged. Call dispatch — a real person will find you a car.</p>${callBtn()}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
         const ranked = rankByRoad(near, await roadTimes(near, pickup)); const c = ranked[0];
         trip.state = 'offered'; trip.offerTo = c.id; if ($('#ds')) $('#ds').textContent = `Asking ${c.name}${c.roadSec != null ? ` (${fmtMin(c.roadSec)} away by road)` : ''}…`;
-        bus.publish('offer/' + c.id, { trip: pub(trip) });
+        const simD = sims.find(x => x.id === c.id);
+        if (!simD && !(await trip.booked)) { if ($('#ds')) $('#ds').innerHTML = `We couldn't confirm your booking with our server, so drivers can't verify it. Please call dispatch at <a href="tel:${DISPATCH_TEL}">${DISPATCH_PHONE}</a>.`; trip.excl.push(c.id); await wait(2000); continue; }
+        if (simD) bus.publish('offer/' + c.id, { trip: pub(trip), _sim: SIM_SECRET }, { localOnly: true });
+        else bus.publish('offer/' + c.id, { trip: pub(trip) });
         trip.offerAt = Date.now(); while (trip === me_t && trip.state === 'offered' && Date.now() - trip.offerAt < 18000) await wait(300);
         if (trip === me_t && trip.state === 'offered') { trip.excl.push(trip.offerTo); trip.state = 'requested'; bus.publish('trip/' + trip.id, { type: 'timeout', driver: trip.offerTo }); }
       }
     }
-    function reassign(why) { if (!trip) return; trip.excl.push(trip.driver?.id); bus.publish('trip/' + trip.id, { type: 'reassign', driver: trip.driver?.id, why }); notify(why + ' — finding you another driver. No charge.'); dispatch('Finding you another driver…'); }
-    function onTrip(m) {
+    function reassign(why) { if (!trip) return; trip.driverKid = null; trip.excl.push(trip.driver?.id); bus.publish('trip/' + trip.id, { type: 'reassign', driver: trip.driver?.id, why }); notify(why + ' — finding you another driver. No charge.'); dispatch('Finding you another driver…'); }
+    function onTrip(m, _t, v) {
       if (!trip || trip.state === 'cancelled') return;
+      if (!isSim(m)) {
+        const fromDriver = ['accept', 'arrived', 'start', 'complete', 'loc', 'decline', 'paid'].includes(m.type) || (m.type === 'cancel' && m.by === 'driver') || (m.type === 'chat' && m.from === 'driver');
+        if (m.type === 'assign' && !(v?.staff && DISPATCHERS.includes(v.role))) return rejected('assign', m);
+        if (fromDriver && !(v?.staff && STAFF.includes(v.role))) return rejected(m.type, m);
+        if (fromDriver && trip.driverKid && !['accept', 'decline'].includes(m.type) && v.kid !== trip.driverKid) return rejected('other driver', m);
+        if (!fromDriver && m.type !== 'assign' && !(v?.rider && v.tid === trip.id)) return;
+        if (m.type === 'accept' && trip.state === 'offered' && m.driver?.id === trip.offerTo) trip.driverKid = v.kid;
+      }
       if (m.type === 'assign' && (trip.state === 'requested' || (trip.state === 'offered' && m.driver !== trip.offerTo))) { trip.state = 'offered'; trip.offerTo = m.driver; trip.offerAt = Date.now(); if ($('#ds')) $('#ds').textContent = `Dispatch assigned ${m.name || 'a driver'} — waiting for them to accept…`; }
       if (m.type === 'decline' && trip.state === 'offered' && m.driver === trip.offerTo) { trip.excl.push(m.driver); trip.state = 'requested'; }
       if (m.type === 'accept' && trip.state === 'offered' && m.driver.id === trip.offerTo) {
@@ -437,6 +569,8 @@ function rider() {
         if (trip.scheduledFor) notify(`${m.driver.name} confirmed for your scheduled ride.`);
         sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="ds-avatar">${esc(initials(m.driver.name))}</div><div class="grow"><b>${esc(m.driver.name)}</b> <span class="rt">${ic('star')}${m.driver.rating ?? '5.0'}</span><div class="muted">${esc(m.driver.car)}</div><span class="plate">${esc(m.driver.plate)}</span></div><div class="etabox"><div class="eta" id="eta">…</div><span class="fine">away</span></div></div>
         ${m.driver.sim ? '<p class="demo">DEMO: this is a simulated driver</p>' : ''}
+        <div class="pinbox" id="pinbox">${ic('shield')}<div>Your ride PIN <b id="pin">${trip.pin}</b><span>Tell it to your driver before you get in. The trip can't start without it.</span></div></div>
+        <div id="dcard" class="dcard"></div>
         <div id="trustw">${trustBanner(trip.fare, trip.pay)}</div>
         <p class="muted" id="tripline">Pickup: ${esc(trip.pickup.label)}${trip.pickup.note ? ' · “' + esc(trip.pickup.note) + '”' : ''} · to <b id="tdest">${esc(dest.label.split(',')[0])}</b></p>
         <button class="btn gold big" id="ropt" aria-expanded="false" aria-controls="rmenu">${ic('menu')}Ride options</button>
@@ -459,6 +593,8 @@ function rider() {
               bus.publish('trip/' + trip.id, { type: 'edit', dest, fare: nf.total, lines: nf.lines, miles: nf.miles, minutes: nf.minutes, meters: nr.distance });
               $('#tdest').textContent = r.label.split(',')[0]; $('#trustw').innerHTML = trustBanner(trip.fare, trip.pay); box.innerHTML = ''; notify('Drop-off updated · new locked price ' + money(nf.total)); }; }); $('#ede').focus(); };
         chatBox($('#chat'), $('#chatb'), trip.id, 'rider');
+        if (trip.driverKid) import('./cloud.js').then(c => c.driverCard(trip.driverKid)).then(cd => { trip.card = cd; if (!cd || !$('#dcard')) return;
+          $('#dcard').innerHTML = `<div class="fine">${cd.approved ? ic('check', 'sm') + ' Documents checked by Rocapulco dispatch' : 'Driver documents pending dispatch review'}${cd.wav ? ' · Wheelchair accessible' : ''}</div>${licRow('TLC driver license #', cd.tlc_driver_license)}${licRow('TLC vehicle license #', cd.tlc_vehicle_license)}${licRow('TLC Base #', TLC_BASE)}${cd.pay_handle ? licRow(PAYMENTS[cd.pay_kind] + ' (verified)', cd.pay_handle) : ''}`; }).catch(() => {});
         $('#cx').onclick = () => { const s = cancelStatus({ matchedAt: trip.matchedAt, now: Date.now(), promisedEtaSec: trip.promised, currentEtaSec: trip.eta }); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', late: !s.free }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; carMk?.remove(); plan(); };
         $('#ns').onclick = noShow;
         tick = setInterval(() => {
@@ -482,6 +618,7 @@ function rider() {
       if (m.type === 'edit' && m.fare != null && trip.fare !== m.fare) Object.assign(trip, { fare: m.fare, lines: m.lines });
       if (m.type === 'cancel' && m.by === 'driver') reassign('Your driver cancelled — you are not charged');
       if (m.type === 'complete') { trip.state = 'completed'; clearInterval(tick); receipt(m); }
+      if (m.type === 'paid' && trip.state === 'completed') trip.onPaid?.(m);
     }
     function noShow() {
       const r = { id: 'r-' + uid(), trip: trip.id, kind: 'driver_no_show', driver: trip.driver.name, plate: trip.driver.plate, at: new Date().toISOString(), rider: me.name };
@@ -489,46 +626,82 @@ function rider() {
       bus.publish('reports/' + r.id, r); store.set('reports', [r, ...store.get('reports', [])]);
       clearInterval(tick); carMk?.remove(); const t = trip; trip = null;
       sheet.innerHTML = `<h2 id="nsdone">Sorry about that — reported</h2><div class="card"><div class="row"><span>Charge</span><b>$0.00</b></div><div class="row"><span>Driver</span><span>${esc(r.driver)} · ${esc(r.plate)}</span></div><div class="row"><span>Report #</span><span>${r.id}</span></div></div><p class="fine">No payment was ever taken, so there is nothing to refund. The report was sent to the dispatcher and saved on this device.</p><button class="btn" id="again">Find another driver now</button><button class="btn alt" id="bk">Back</button>`;
-      $('#again').onclick = () => { trip = t; trip.excl.push(t.driver.id); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }); dispatch('Finding you another driver…'); };
+      $('#again').onclick = () => { trip = t; trip.driverKid = null; trip.excl.push(t.driver.id); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }); dispatch('Finding you another driver…'); };
       $('#bk').onclick = plan;
     }
     function receipt(m) {
-      const rec = { id: trip.id, date: new Date().toISOString(), from: trip.pickup.label, to: dest.label, fare: m.fare, pay: trip.pay, vclass: trip.vclass || 'sedan', lines: m.lines || trip.lines, miles: +(m.meters / 1609.344).toFixed(2), minutes: Math.round((m.seconds || 0) / 60), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate, thumb: rt?.coords?.length ? rt.coords.filter((_, i, a) => i % Math.max(1, Math.floor(a.length / 80)) === 0 || i === a.length - 1) : null };
+      const rec = { flat: trip.pickup.lat, flng: trip.pickup.lng, dlat: dest.lat, dlng: dest.lng, card: trip.card || null, id: trip.id, date: new Date().toISOString(), from: trip.pickup.label, to: dest.label, fare: m.fare, pay: trip.pay, vclass: trip.vclass || 'sedan', lines: m.lines || trip.lines, miles: +(m.meters / 1609.344).toFixed(2), minutes: Math.round((m.seconds || 0) / 60), driver: trip.driver.name, car: trip.driver.car, plate: trip.driver.plate, thumb: rt?.coords?.length ? rt.coords.filter((_, i, a) => i % Math.max(1, Math.floor(a.length / 80)) === 0 || i === a.length - 1) : null };
       try { learn.record({ pickup: trip.pickup, dest, waitSec: trip.matchedAt ? (trip.matchedAt - trip.ts) / 1000 : null, rideSec: m.seconds }); } catch {}
       const h = store.get('history_rider', []); h.unshift(rec); store.set('history_rider', h.slice(0, 100));
       const save = () => store.set('history_rider', [rec, ...store.get('history_rider', []).filter(r => r.id !== rec.id)]);
-      sheet.innerHTML = `<h2 id="done">You've arrived</h2>${trustBanner(m.fare, rec.pay)}${receiptCard(rec)}${payLink(rec.pay, m.fare)}
-      <h3>Rate your ride</h3><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}" aria-label="${i} star${i > 1 ? 's' : ''}">${ic('star')}</button>`).join('')}</div><div class="tags" id="tags" hidden>${RATE_TAGS.map(t => `<button class="ds-chip" aria-pressed="false">${t}</button>`).join('')}</div><button class="btn gold" id="fin">Done</button><button class="btn alt" id="prob">${ic('alert')}Report a problem</button><div id="probf"></div>${callBtn()}`;
-      sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + rec.id, { type: 'rate', stars: s, driver: trip?.driver?.id }); rec.stars = s; save(); $('#tags').hidden = false; });
+      sheet.innerHTML = `<h2 id="done">You've arrived</h2>${trustBanner(m.fare, rec.pay)}${receiptCard(rec)}<p class="paidst" id="paidst">${ic('clock', 'sm')} Waiting for your driver to mark this paid</p>${payLink(rec.pay, m.fare, rec.card)}<div class="two eq"><button class="btn alt" id="rdl">${ic('arrow', 'sm')}Download receipt</button><button class="btn alt" id="rsh">${ic('share', 'sm')}Share receipt</button></div>
+      <h3>Rate your ride</h3><div class="stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}" aria-label="${i} star${i > 1 ? 's' : ''}">${ic('star')}</button>`).join('')}</div><div class="tags" id="tags" hidden>${RATE_TAGS.map(t => `<button class="ds-chip" aria-pressed="false">${t}</button>`).join('')}</div><div id="rateact"></div><div id="inst"></div><button class="btn gold" id="fin">Done</button><button class="btn alt" id="prob">${ic('alert')}Report a problem</button><div id="probf"></div>${callBtn()}`;
+      sheet.querySelectorAll('.stars button').forEach(b => b.onclick = () => { const s = +b.dataset.s; sheet.querySelectorAll('.stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= s)); bus.publish('trip/' + rec.id, { type: 'rate', stars: s, driver: trip?.driver?.id }); rec.stars = s; save(); $('#tags').hidden = false; rateAct(s, rec); });
       const drvId = trip.driver.id;
       sheet.querySelectorAll('#tags button').forEach(b => b.onclick = () => { b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') !== 'true'); rec.tags = [...sheet.querySelectorAll('#tags [aria-pressed=true]')].map(x => x.textContent); bus.publish('trip/' + rec.id, { type: 'tags', tags: rec.tags, driver: drvId }); save(); });
       $('#prob').onclick = () => problemForm($('#probf'), rec);
+      wireReceipt(rec);
+      trip.onPaid = (m) => { rec.paid = { method: m.method, at: new Date().toISOString() }; save(); if ($('#paidst')) $('#paidst').innerHTML = `${ic('check', 'sm')} Driver confirmed payment received · ${esc(PAYMENTS[m.method] || m.method)}`; $('#paidst')?.classList.add('ok'); };
+      installCard();
       $('#fin').onclick = () => { carMk?.remove(); line?.remove(); pinD?.remove(); pinD = line = null; dest = null; trip = null; plan(); };
+    }
+    function receiptText(rec) { return [`Rocapulco Supreme — receipt`, `Booking #${rec.id}`, new Date(rec.date).toLocaleString(), `From: ${rec.from}`, `To: ${rec.to}`, ...(rec.lines || []).map(l => `${l[0]}: ${money(l[1])}`), `Total (locked at booking): ${money(rec.fare)}`, `Paid with: ${PAYMENTS[rec.pay] || ''}${rec.paid ? ' — confirmed by driver' : ''}`, `Driver: ${rec.driver} · ${rec.car || ''} · plate ${rec.plate || ''}`, `TLC driver license #: ${rec.card?.tlc_driver_license || ''}`, `TLC vehicle license #: ${rec.card?.tlc_vehicle_license || ''}`, `TLC Base #: ${TLC_BASE}`, `Dispatch: ${DISPATCH_PHONE}`].join('\n'); }
+    // 4–5 stars: invite them to share (their referral link) and leave a public review; 1–3: open the private problem report
+    function rateAct(s, rec) {
+      const box = $('#rateact'); if (!box) return;
+      if (s <= 3) { box.innerHTML = `<p class="muted" id="sorry">Sorry it wasn't great. Tell us what happened — dispatch reads every report.</p>`; if (!$('#probf').childElementCount) problemForm($('#probf'), rec); $('#probf').scrollIntoView({ block: 'center' }); return; }
+      const msg = `I ride with Rocapulco Supreme in Queens — upfront prices, JFK $75 flat. Book here: ${refLink()}`;
+      box.innerHTML = `<div class="card shareask" id="shareask"><b>Glad you enjoyed it!</b><p class="muted">Share Rocapulco with a friend — your code <b id="myref">${myRef()}</b> is in the link so dispatch knows you sent them.</p>
+        <div class="two eq"><a class="btn alt" id="smsref" href="sms:?&body=${encodeURIComponent(msg)}">${ic('share', 'sm')}Text a friend</a><button class="btn alt" id="cpref">Copy link</button></div>
+        ${GOOGLE_REVIEW_URL ? `<a class="btn alt" id="grev" href="${esc(GOOGLE_REVIEW_URL)}" target="_blank" rel="noopener">${ic('star', 'sm')}Review us on Google</a>` : ''}</div>`;
+      $('#cpref').onclick = async () => { try { await navigator.clipboard.writeText(refLink()); notify('Link copied'); } catch { notify(refLink()); } };
+    }
+    function installCard() {
+      const box = $('#inst'); if (!box || matchMedia('(display-mode: standalone)').matches || navigator.standalone || store.get('install_dismissed')) return;
+      const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (!installEvt && !ios) return;
+      box.innerHTML = `<div class="card instc" id="instc"><b>${ic('plus', 'sm')} Add Rocapulco to your home screen</b><p class="muted">${ios ? 'Tap the Share button, then <b>Add to Home Screen</b>. Your trips and saved places come with it.' : 'One tap next time — no app store, works offline for your saved places.'}</p>
+        <div class="two eq">${ios ? '' : '<button class="btn alt" id="instb">Install app</button>'}<button class="btn link" id="instx">Not now</button></div></div>`;
+      $('#instb') && ($('#instb').onclick = async () => { installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); installEvt = null; box.innerHTML = r?.outcome === 'accepted' ? '<p class="muted">Installed ✓</p>' : ''; });
+      $('#instx').onclick = () => { store.set('install_dismissed', true); box.innerHTML = ''; };
+    }
+    function wireReceipt(rec) {
+      $('#rdl') && ($('#rdl').onclick = () => { const html = `<!doctype html><meta charset="utf-8"><title>Rocapulco receipt ${esc(rec.id)}</title><body style="font:15px/1.6 system-ui;max-width:520px;margin:24px auto;padding:0 16px"><h1 style="font-family:Georgia,serif">Rocapulco Supreme</h1><pre style="white-space:pre-wrap;font:inherit">${esc(receiptText(rec))}</pre></body>`;
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' })); a.download = `rocapulco-receipt-${rec.id}.html`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); });
+      $('#rsh') && ($('#rsh').onclick = async () => { const t = receiptText(rec) + `\n\nRide with Rocapulco: ${refLink()}`; try { if (navigator.share) await navigator.share({ title: 'Rocapulco receipt', text: t }); else { await navigator.clipboard.writeText(t); notify('Receipt copied'); } } catch {} });
+      const pl = $('#paylink[data-copy]'); if (pl) pl.onclick = async () => { try { await navigator.clipboard.writeText(pl.dataset.copy); notify('Copied ' + pl.dataset.copy + ' — paste it in your bank\'s Zelle'); } catch {} };
     }
     function receiptCard(rec) {
       return `<div class="card rcpt" id="rcpt"><div class="rc-top">${routeThumb(rec.thumb)}<div class="grow"><div class="fine">Booking #${esc(rec.id)}</div><div class="rc-tot" id="rfare">${money(rec.fare)}</div><div class="muted">${esc(VCLASS[rec.vclass || 'sedan'].name)} · ${rec.miles ?? '–'} mi${rec.minutes ? ' · ' + rec.minutes + ' min' : ''}</div></div></div>
       <div class="rc-drv"><div class="ds-avatar">${esc(initials(rec.driver))}</div><div class="grow"><b>${esc(rec.driver)}</b><div class="muted">${esc(rec.car || '')}</div></div><span class="plate">${esc(rec.plate || '')}</span></div>
       <div class="rc-lines">${(rec.lines || []).map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total · locked at booking</span><b>${money(rec.fare)}</b></div><div class="row"><span>Paid with</span><b id="rpay">${PAYMENTS[rec.pay] || '—'}</b></div></div>
-      <div class="rc-route"><div class="row"><span>From</span><span class="ell">${esc(rec.from || '')}</span></div><div class="row"><span>To</span><span class="ell">${esc(rec.to || '')}</span></div><div class="row"><span>Car service</span><span>Rocapulco Supreme · ${tlcLine()}</span></div><div class="row"><span>When</span><span>${new Date(rec.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span></div></div></div>`;
+      <div class="rc-route"><div class="row"><span>From</span><span class="ell">${esc(rec.from || '')}</span></div><div class="row"><span>To</span><span class="ell">${esc(rec.to || '')}</span></div><div class="row"><span>Car service</span><span>Rocapulco Supreme · ${tlcLine()}</span></div>${licRow('TLC driver license #', rec.card?.tlc_driver_license)}${licRow('TLC vehicle license #', rec.card?.tlc_vehicle_license)}${rec.paid ? `<div class="row"><span>Payment</span><span>${ic('check', 'sm')} Confirmed by driver</span></div>` : ''}<div class="row"><span>When</span><span>${new Date(rec.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span></div></div></div>`;
     }
     function problemForm(box, rec) {
       if (box.innerHTML) { box.innerHTML = ''; return; }
       const KINDS = { charged_more: 'Driver asked for more than the screen showed', paid_twice: 'I was asked to pay twice', route: 'Took a long or wrong route', safety: 'Safety concern', lost_item: 'Left something in the car', other: 'Something else' };
       box.innerHTML = `<form class="card probf" id="pf2"><div class="fine">Booking #${esc(rec.id)} · ${esc(rec.driver)} · ${esc(rec.plate || '')} · ${money(rec.fare)}</div>${Object.entries(KINDS).map(([k, v], i) => `<label class="tog"><input type="radio" name="k" value="${k}" ${i ? '' : 'checked'}> ${v}</label>`).join('')}<textarea id="ptx" maxlength="500" placeholder="What happened? (optional)"></textarea><button class="btn gold" id="psend">Send to dispatch</button></form>`;
-      $('#pf2').onsubmit = (e) => { e.preventDefault(); const k = new FormData(e.target).get('k');
+      $('#pf2').onsubmit = async (e) => { e.preventDefault(); const k = new FormData(e.target).get('k');
         const r = { id: 'r-' + uid(), trip: rec.id, kind: 'trip_problem', reason: k, text: $('#ptx').value.trim().slice(0, 500), driver: rec.driver, plate: rec.plate, fare: rec.fare, at: new Date().toISOString(), rider: me.name };
+        box.innerHTML = '<p class="muted">Sending…</p>';
+        let ticket = null; try { ticket = await (await import('./cloud.js')).fileComplaint(rec.id, k, r.text, rec.driver, rec.plate); r.ticket = ticket; } catch (er) { console.warn('complaint not saved on server', er.message); }
         bus.publish('reports/' + r.id, r); store.set('reports', [r, ...store.get('reports', [])]);
-        box.innerHTML = `<p class="nosurge" id="probok">${ic('check')} Sent to dispatch · report #${r.id}. A real person follows up${me.phone ? ' at ' + esc(me.phone) : ''}.</p>`; };
+        box.innerHTML = `<p class="nosurge" id="probok">${ic('check')} Sent to dispatch · ${ticket ? 'ticket <b id="ticket">' + ticket + '</b>' : 'report #' + r.id + ' (saved on this device; call dispatch if urgent)'}. A real person follows up${me.phone ? ' at ' + esc(me.phone) : ''}.</p>`; };
     }
     function tripDetail(rec) {
-      sheet.innerHTML = `<div class="hi"><a href="#" id="bk3" class="back">${ic('back')}Your trips</a></div><h2>Receipt</h2>${receiptCard(rec)}<button class="btn alt" id="prob">${ic('alert')}Report a problem</button><div id="probf"></div>${callBtn()}`;
-      $('#bk3').onclick = (e) => { e.preventDefault(); history(); }; $('#prob').onclick = () => problemForm($('#probf'), rec);
+      sheet.innerHTML = `<div class="hi"><a href="#" id="bk3" class="back">${ic('back')}Your trips</a></div><h2>Receipt</h2>${receiptCard(rec)}<div class="two eq"><button class="btn alt" id="rdl">${ic('arrow', 'sm')}Download receipt</button><button class="btn alt" id="rsh">${ic('share', 'sm')}Share receipt</button></div><button class="btn alt" id="prob">${ic('alert')}Report a problem</button><div id="probf"></div>${callBtn()}`;
+      $('#bk3').onclick = (e) => { e.preventDefault(); history(); }; wireReceipt(rec); $('#prob').onclick = () => problemForm($('#probf'), rec);
     }
     function history() {
       const h = store.get('history_rider', []);
-      sheet.innerHTML = `${tabs('rider')}<h2>Your trips</h2>${h.length ? h.map((r, i) => `<div class="card hist trip" role="button" tabindex="0" data-h="${i}"><div class="rte"><span class="dot a"></span><span class="ln"></span><span class="dot b"></span></div><div class="grow"><div class="ell">${esc((r.from || '').split(',')[0])}</div><div class="ell"><b>${esc(r.to.split(',')[0])}</b></div><div class="muted">${new Date(r.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${esc(r.driver)}${r.stars ? ` · ${r.stars}${ic('star', 'sm')}` : ''}</div></div><div class="amt"><b>${money(r.fare)}</b><span class="fine">${esc(PAYMENTS[r.pay] || '')}</span></div></div>`).join('') : `<div class="empty">${ic('history')}<p class="muted">No trips yet. Your rides will show here.</p></div>`}<button class="btn" id="bk">Back</button>`;
+      sheet.innerHTML = `${tabs('rider')}<h2>Your trips</h2>${h.length ? h.map((r, i) => `<div class="card hist trip" role="button" tabindex="0" data-h="${i}"><div class="rte"><span class="dot a"></span><span class="ln"></span><span class="dot b"></span></div><div class="grow"><div class="ell">${esc((r.from || '').split(',')[0])}</div><div class="ell"><b>${esc(r.to.split(',')[0])}</b></div><div class="muted">${new Date(r.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${esc(r.driver)}${r.stars ? ` · ${r.stars}${ic('star', 'sm')}` : ''}</div></div><div class="amt"><b>${money(r.fare)}</b><span class="fine">${esc(PAYMENTS[r.pay] || '')}</span></div></div>${r.dlat != null ? `<div class="two eq rbk"><button class="btn alt sm" data-rb="${i}">${ic('history', 'sm')}Rebook</button>${r.flat != null ? `<button class="btn alt sm" data-rv="${i}">${ic('arrow', 'sm')}Reverse trip</button>` : ''}</div>` : ''}`).join('') : `<div class="empty">${ic('history')}<p class="muted">No trips yet. Your rides will show here.</p></div>`}<button class="btn" id="bk">Back</button>`;
       $('#bk').onclick = plan;
       sheet.querySelectorAll('[data-h]').forEach(el => el.onclick = () => tripDetail(h[+el.dataset.h]));
+      // Rebook = same pickup + destination; Reverse = the way back. Fare is re-quoted live, never copied.
+      const again = (r, back) => { const A = { lat: r.flat, lng: r.flng, label: r.from }, B = { lat: r.dlat, lng: r.dlng, label: r.to };
+        const [p, d] = back ? [B, A] : [A, B]; rt = null; fare = null; if (p.lat != null) pickup = { ...p }; plan(); if (p.lat != null) setPickup(p, p.label, false); setDest(d, true); };
+      sheet.querySelectorAll('[data-rb]').forEach(b => b.onclick = (e) => { e.stopPropagation(); again(h[+b.dataset.rb], false); });
+      sheet.querySelectorAll('[data-rv]').forEach(b => b.onclick = (e) => { e.stopPropagation(); again(h[+b.dataset.rv], true); });
     }
     plan();
   });
@@ -539,14 +712,24 @@ function driver() {
   profileForm('driver', (me) => {
     let online = false, status = 'offline', loc = null, simulate = store.get('simgps', false), trip = null, rt = null, phase = null, simM = 0, lastStep = null, offer = null, rerouting = false;
     let meMk, line, watchId, gpsMode = null, lastPub = null, home = store.get('home', null), homeMode = store.get('homeMode', false);
-    const info = () => ({ id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
+    let docs = null; const cloudP = import('./cloud.js'); cloudP.then(c => c.myDocs()).then(d => { docs = d; if ($('#docs')) idle();
+      const bad = DOCS.map(([k, n]) => [n, docState(d?.[k])]).filter(([, st]) => st[0] !== 'ok');
+      const key = 'docnag_' + new Date().toDateString(); if (d && bad.length && !store.get(key)) { store.set(key, true); notify('Document reminder: ' + bad.map(([n, st]) => n + ' — ' + st[1].toLowerCase()).join('; ')); } }).catch(() => {});
+    const info = () => ({ wav: !!docs?.wav, id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
+    const drvRef = () => 'D' + (String(me.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-7) || me.id.slice(-5).toUpperCase());
     const avgRating = () => { const r = store.get('ratings', []); return r.length ? +(r.reduce((a, b) => a + b, 0) / r.length).toFixed(2) : 5.0; };
     const presence = (force) => { if (!loc || !(online || status === 'offline')) return;
       // battery/data friendly: publish only when moved >25 m, status changed, or every 15 s
       if (!force && lastPub && lastPub.status === status && haversine(lastPub, loc) < 25 && Date.now() - lastPub.ts < 15000) return;
       lastPub = { lat: loc.lat, lng: loc.lng, status, ts: Date.now() }; bus.publish('drivers/' + me.id, info()); };
     every(() => presence(), 5000);
-    sub('offer/' + me.id, (m) => {
+    vsub('offer/' + me.id, async (m, _t, v) => {
+      const t0 = m?.trip; if (!t0?.id) return;
+      const viaDispatch = v?.staff && DISPATCHERS.includes(v.role), viaRider = v?.rider && v.tid === t0.id;
+      if (!viaDispatch && !viaRider) return rejected('offer unsigned', m);
+      if (!(await bookingOk(t0))) return rejected('offer without matching server booking', m);
+      if (t0.wav && !docs?.wav) return bus.publish('trip/' + t0.id, { type: 'decline', driver: me.id, why: 'not_wav' });
+      tripPubs.set(t0.id, t0.riderPub);
       if (status !== 'available' || offer) return bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id, why: 'busy' });
       if (homeMode && home && !homeFilterOk({ driver: loc, dest: m.trip.dest, home })) { bus.publish('trip/' + m.trip.id, { type: 'decline', driver: me.id, why: 'heading_home' }); skipped++; $('#hskip') && ($('#hskip').textContent = skipped + ' skipped (not toward home)'); return; }
       showOffer(m.trip); });
@@ -570,7 +753,10 @@ function driver() {
     function idle() {
       const e = earnings();
       sheet.innerHTML = `${tabs('driver')}<div class="hi">${esc(me.name)} · ${esc(me.car)} · ${esc(me.plate)}</div>
-      <button class="btn big ${online ? 'alt' : ''}" id="tg">${online ? 'Go offline' : 'Go online'}</button>
+      <button class="btn big ${online ? 'alt' : ''}" id="tg">${online ? 'Go offline' : 'Go online'}</button><div id="gate"></div>
+      ${(() => { const ph = passengerHours(store.get('history_driver', [])); return `<div class="card hrs ${ph.blocked ? 'blocked' : ph.warn ? 'warn' : ''}" id="hrs"><div class="row"><span>Passenger hours · last 24 h</span><b>${ph.dayH.toFixed(1)} / 10</b></div><div class="bar"><i style="width:${Math.min(100, ph.dayH * 10)}%"></i></div><div class="row"><span>This week (Mon–Sun)</span><b>${ph.weekH.toFixed(1)} / 60</b></div>${ph.why ? `<p class="fine">${esc(ph.why)}</p>` : ph.warn ? '<p class="fine">Close to the TLC limit — plan your last ride.</p>' : ''}</div>`; })()}
+      ${store.get('first_shift_done') ? '' : `<details class="card fshift" id="fshift" open><summary><b>${ic('check', 'sm')} First shift checklist</b></summary><ol><li>Go online when you're ready; a ride offer rings with the pickup, drop-off and your 70% take.</li><li>Accept, then tap <b>Navigate</b> to open Google Maps or Waze.</li><li>At pickup ask the rider for their <b>4-digit PIN</b> before you start.</li><li>Fare is locked upfront — collect exactly what the app shows, then tap <b>Mark as paid</b>.</li><li>Problem or emergency: call 911 first, then dispatch ${DISPATCH_PHONE}.</li></ol><button class="btn alt sm" id="fsdone">Got it</button></details>`}
+      ${docsCard()}
       <p id="dst" class="muted">${online ? '<i class="live"></i>Online — waiting for ride requests near you' : '<i class="off"></i>Offline'}</p>
       <div class="grid"><div class="card stat"><span>Your take today (70%)</span><b id="etoday">${money(split(e.today).driver)}</b></div><div class="card stat"><span>Trips today</span><b>${e.n}</b></div><div class="card stat"><span>Your take this week</span><b id="eweek">${money(split(e.week).driver)}</b></div><div class="card stat"><span>Rating</span><b>${ic('star', 'sm')} ${avgRating()}</b></div></div>
       <div class="card split" id="esplit"><div class="row"><span>Fares collected today</span><span>${money(e.today)}</span></div><div class="row"><span>You keep (70%)</span><b>${money(split(e.today).driver)}</b></div><div class="row"><span>Rocapulco (30%)</span><span>${money(split(e.today).company)}</span></div></div>
@@ -580,8 +766,22 @@ function driver() {
       ${callBtn()}<p class="fine">Declining a ride never hurts you — there is no acceptance rate. GPS: ${simulate ? 'simulated' : 'power-saver while waiting, high-accuracy on trips'}.</p>
       <label class="tog"><input type="checkbox" id="sim" ${simulate ? 'checked' : ''}> Simulate GPS (moves the car along the route — for testing indoors)</label>
       <label class="tog"><input type="checkbox" id="vo" ${store.get('voice', true) ? 'checked' : ''}> Voice directions</label>
+      <details class="card qrc" id="qrc"><summary><b>${ic('share', 'sm')} Seatback QR card</b> <span class="muted">riders scan to book you again</span></summary><div id="qrbox" class="qrbox"></div>
+        <p class="fine">Code <b>${esc(drvRef())}</b> — rides booked from this card show “Referred · ${esc(drvRef())}” to dispatch.</p><button class="btn alt" id="qrprint">Print card</button></details>
       <a href="#" id="eh" class="btn link">Trip log</a>`;
-      $('#tg').onclick = async () => { online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); presence(true); idle(); };
+      wireDocs();
+      $('#fsdone') && ($('#fsdone').onclick = () => { store.set('first_shift_done', true); $('#fshift').remove(); });
+      $('#qrc').ontoggle = async () => { if (!$('#qrc').open || $('#qrbox').childElementCount) return; const { default: qr } = await import('./vendor/qrcode.js'); const q = qr(0, 'M'); q.addData(refLink(drvRef()) + '&nosplash=1'); q.make();
+        $('#qrbox').innerHTML = q.createSvgTag({ cellSize: 5, margin: 3, scalable: true }); $('#qrbox svg').setAttribute('aria-label', 'QR code: ' + refLink(drvRef())); };
+      $('#qrprint').onclick = () => { const svg = $('#qrbox').innerHTML; const w = open('', '_blank'); if (!w) return notify('Allow pop-ups to print');
+        w.document.write(`<!doctype html><title>Rocapulco QR card</title><body style="font:16px system-ui;text-align:center;padding:24px"><h1 style="font-family:Georgia,serif;margin:0">Rocapulco Supreme</h1><p>Scan to book your next ride — upfront prices, JFK $75 flat</p><div style="width:260px;margin:12px auto">${svg}</div><p><b>${esc(me.name.split(' ')[0])}</b> · ${esc(me.plate)} · code ${esc(drvRef())}</p><p>Dispatch ${DISPATCH_PHONE}</p><script>onload=()=>print()<\/script>`); w.document.close(); };
+      $('#tg').onclick = async () => {
+        if (!online) { const ph = passengerHours(store.get('history_driver', [])); if (ph.blocked) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} Rest required</b><p>${esc(ph.why)}</p></div>`; return; }
+          if (!store.get('loc_consent')) { $('#gate').innerHTML = `<div class="card" id="locc"><b>${ic('pin', 'sm')} Share your location while online?</b><p class="muted">While you're online, dispatch and nearby riders who book see your car's position so we can send you rides. It stops the moment you go offline.</p><div class="two eq"><button class="btn gold" id="locyes">Share and go online</button><button class="btn alt" id="locno">Not now</button></div></div>`;
+            $('#locyes').onclick = () => { store.set('loc_consent', { at: new Date().toISOString() }); $('#gate').innerHTML = ''; $('#tg').click(); }; $('#locno').onclick = () => { $('#gate').innerHTML = ''; }; return; }
+          $('#tg').disabled = true; let rd = null; try { rd = await (await cloudP).driverReady(); } catch (e) { rd = { ok: false, problems: ['could not check documents: ' + e.message] }; } $('#tg') && ($('#tg').disabled = false);
+          if (!rd.ok) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} You can't go online yet</b><ul>${rd.problems.map(x => `<li>${esc(x)}</li>`).join('')}</ul><p class="fine">Update your documents below. Dispatch reviews every change.</p></div>`; return; } }
+        online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); presence(true); idle(); };
       $('#sim').onchange = (e) => { simulate = e.target.checked; store.set('simgps', simulate); if (simulate && watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; } else if (!simulate) startGPS(); };
       $('#vo').onchange = (e) => store.set('voice', e.target.checked);
       $('#hm').onchange = (e) => { if (e.target.checked && !home) { e.target.checked = false; notify('Set your home first'); return; } homeMode = e.target.checked; store.set('homeMode', homeMode); };
@@ -589,6 +789,24 @@ function driver() {
       $('#eh').onclick = (e) => { e.preventDefault(); const h = store.get('history_driver', []); sheet.innerHTML = `${tabs('driver')}<h2>Trip log</h2>${h.map(r => `<div class="card hist"><div><b>${esc(r.to.split(',')[0])}</b><div class="muted">${new Date(r.date).toLocaleString()} · ${esc(r.rider)}</div></div><b>${money(r.fare)}</b></div>`).join('') || '<p class="muted">No trips yet.</p>'}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = idle; };
       startGPS();
     }
+    const DOCS = [['dmv_exp', 'DMV driver license'], ['tlc_exp', 'TLC driver license'], ['reg_exp', 'Vehicle registration'], ['ins_exp', 'Insurance']];
+    const docState = (d) => { if (!d) return ['missing', 'Missing']; const days = Math.floor((new Date(d + 'T23:59:59') - Date.now()) / 864e5); return days < 0 ? ['expired', 'Expired'] : days <= 30 ? ['soon', `Expires in ${days} day${days === 1 ? '' : 's'}`] : ['ok', 'Valid to ' + new Date(d + 'T12:00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })]; };
+    const SICON = { missing: 'x', expired: 'x', soon: 'alert', ok: 'check' };
+    function docsCard() {
+      const d = docs || {}, rs = { pending: 'Waiting for dispatch review', approved: 'Approved by dispatch', needs_doc: 'Dispatch needs a document', declined: 'Declined' }[d.review_status] || 'Not submitted';
+      return `<details class="card docs" id="docs" ${DOCS.some(([k]) => docState(d[k])[0] !== 'ok') ? 'open' : ''}><summary><b>Documents &amp; licenses</b> <span class="ds-badge ${d.review_status === 'approved' ? 'flat' : 'up'}">${esc(rs)}</span></summary>
+        ${d.review_note ? `<p class="fine">Dispatch: ${esc(d.review_note)}</p>` : ''}
+        <div class="chips">${DOCS.map(([k, n]) => { const [st, lab] = docState(d[k]); return `<span class="dchip ${st}" data-doc="${k}">${ic(SICON[st], 'sm')}${n}: ${esc(lab)}</span>`; }).join('')}</div>
+        <form id="docf" class="docf"><label>TLC driver license #<input name="tlc_driver_license" value="${esc(d.tlc_driver_license || '')}" inputmode="numeric" maxlength="20"></label>
+        <label>TLC vehicle (FHV) license #<input name="tlc_vehicle_license" value="${esc(d.tlc_vehicle_license || '')}" maxlength="20"></label><label>Plate<input name="plate" value="${esc(d.plate || me.plate || '')}" maxlength="12"></label>
+        ${DOCS.map(([k, n]) => `<label>${n} expires<input type="date" name="${k}" value="${esc(d[k] || '')}"></label>`).join('')}
+        <label class="tog"><input type="checkbox" name="wav" ${d.wav ? 'checked' : ''}> Wheelchair-accessible vehicle (ramp or lift)</label>
+        <label>Payment handle for riders<span class="two eq"><select name="pay_kind"><option value="">None</option><option value="zelle" ${d.pay_kind === 'zelle' ? 'selected' : ''}>Zelle</option><option value="venmo" ${d.pay_kind === 'venmo' ? 'selected' : ''}>Venmo</option></select><input name="pay_handle" value="${esc(d.pay_handle || '')}" placeholder="@handle, email or phone" maxlength="60"></span></label>
+        <p class="fine">${d.pay_handle ? (d.handle_verified ? ic('check', 'sm') + ' Handle verified by dispatch — riders see it on your card.' : 'Handle not verified yet — riders won\'t see it until dispatch checks it.') : 'Riders only see a handle after dispatch verifies it.'}</p>
+        <button class="btn" id="docsave">Save documents</button><span id="docmsg" class="fine"></span></form></details>`;
+    }
+    function wireDocs() { const f = $('#docf'); if (!f) return; f.onsubmit = async (e) => { e.preventDefault(); const p = Object.fromEntries(new FormData(f)); p.wav = !!f.elements.wav.checked;
+      $('#docmsg').textContent = 'Saving…'; try { docs = await (await cloudP).saveDocs(p); presence(true); idle(); notify('Documents saved — dispatch will review'); } catch (er) { $('#docmsg').textContent = 'Could not save: ' + er.message; } }; }
     function earnings() {
       const h = store.get('history_driver', []), d0 = new Date().setHours(0, 0, 0, 0), w0 = d0 - 6 * 864e5;
       const t = h.filter(r => +new Date(r.date) >= d0);
@@ -612,8 +830,8 @@ function driver() {
       const decline = () => { clearInterval(h); pp.remove(); pd.remove(); offer = null; bus.publish('trip/' + t.id, { type: 'decline', driver: me.id }); idle(); };
       $('#dec').onclick = decline;
       $('#acc').onclick = async () => { clearInterval(h); pp.remove(); pd.remove(); offer = null; trip = t; status = 'busy'; startGPS();
-        sub('trip/' + t.id, (m) => { if (trip && m.type === 'cancel' && m.by === 'rider') { speak('Rider cancelled'); endTrip(); sheet.innerHTML = '<h2>Rider cancelled the trip</h2><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } if (m.type === 'edit' && trip) { Object.assign(trip, { dest: m.dest, fare: m.fare, lines: m.lines, miles: m.miles, minutes: m.minutes }); speak('Rider changed the drop-off'); notify('Drop-off changed to ' + m.dest.label.split(',')[0] + ' · new fare ' + money(m.fare)); if (phase === 'trip') navTo('trip'); } if (m.type === 'rate' && m.driver === me.id) { const r = store.get('ratings', []); r.push(m.stars); store.set('ratings', r.slice(-200)); } if (m.type === 'timeout' && m.driver === me.id && trip && phase === null) endTrip(); if (m.type === 'reassign' && m.driver === me.id && trip) { endTrip(); sheet.innerHTML = '<h2>Trip was reassigned</h2><p class="muted">The rider lost contact with you and was matched with another driver.</p><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } });
-        bus.publish('trip/' + t.id, { type: 'accept', driver: info() }); presence(true); await navTo('pickup'); };
+        vsub('trip/' + t.id, (m, _t, v) => { if (!(v?.rider && v.tid === t.id && !v.selfCert) && !(v?.staff && DISPATCHERS.includes(v.role))) return; if (trip && m.type === 'cancel' && m.by === 'rider') { speak('Rider cancelled'); endTrip(); sheet.innerHTML = '<h2>Rider cancelled the trip</h2><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } if (m.type === 'edit' && trip) { Object.assign(trip, { dest: m.dest, fare: m.fare, lines: m.lines, miles: m.miles, minutes: m.minutes }); speak('Rider changed the drop-off'); notify('Drop-off changed to ' + m.dest.label.split(',')[0] + ' · new fare ' + money(m.fare)); if (phase === 'trip') navTo('trip'); } if (m.type === 'rate' && m.driver === me.id) { const r = store.get('ratings', []); r.push(m.stars); store.set('ratings', r.slice(-200)); } if (m.type === 'timeout' && m.driver === me.id && trip && phase === null) endTrip(); if (m.type === 'reassign' && m.driver === me.id && trip) { endTrip(); sheet.innerHTML = '<h2>Trip was reassigned</h2><p class="muted">The rider lost contact with you and was matched with another driver.</p><button class="btn" id="bk">OK</button>'; $('#bk').onclick = idle; } });
+        bus.publish('trip/' + t.id, { type: 'accept', driver: info() }); cloudP.then(c => c.rideEvent(t.id, 'accept', { fare: t.fare, base: TLC_BASE })).catch(e => console.warn('ride record', e.message)); presence(true); await navTo('pickup'); };
     }
     async function navTo(p) {
       phase = p; const target = p === 'pickup' ? trip.pickup : trip.dest;
@@ -622,12 +840,13 @@ function driver() {
       map.fitBounds(line.getBounds(), { padding: [40, 40] });
       sheet.innerHTML = `<div class="nav"><div class="turn" id="turn">Starting navigation…</div><div class="muted" id="tdist"></div></div>
       <div class="card"><b>${p === 'pickup' ? 'Pick up ' + esc(trip.rider.name) : 'Drop off at ' + esc(trip.dest.label.split(',')[0])}</b><div class="muted">${esc(target.label)}</div>${p === 'pickup' && trip.pickup.note ? `<div class="note">“${esc(trip.pickup.note)}”</div>` : ''}<div id="rem" class="muted"></div></div>
-      <div class="two eq">${trip.rider.phone ? `<a class="btn alt" href="tel:${esc(trip.rider.phone)}">${ic('phone')}Call</a>` : '<span></span>'}<button class="btn alt" id="chatb">Message</button></div><div id="chat"></div>
+      <div class="two eq"><span id="callr"><button class="btn alt" disabled>${ic('phone')}Call rider</button></span><button class="btn alt" id="chatb">Message</button></div><div id="chat"></div>
       <a class="btn alt" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=driving">Open in Google Maps</a>
       <button class="btn" id="act">${p === 'pickup' ? "I've arrived" : 'Complete trip'}</button>${p === 'pickup' ? '<button class="btn link" id="dcx">Cancel trip</button>' : ''}`;
       $('#act').onclick = p === 'pickup' ? arrived : complete;
       chatBox($('#chat'), $('#chatb'), trip.id, 'driver');
-      if ($('#dcx')) $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); endTrip(); idle(); };
+      { const tid = trip.id; const getC = (n = 0) => cloudP.then(c => c.riderContact(tid)).then(rc => { if (!rc && n < 4) return wait(1500).then(() => getC(n + 1)); if (rc?.rider_phone && $('#callr') && trip?.id === tid) $('#callr').innerHTML = `<a class="btn alt" id="callrider" href="tel:${esc(rc.rider_phone)}">${ic('phone')}Call rider</a>`; else if ($('#callr')) $('#callr').innerHTML = '<span class="fine">Rider phone unavailable — use Message or dispatch</span>'; }).catch(() => {}); getC(); }
+      if ($('#dcx')) $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); ev('cancel_driver'); endTrip(); idle(); };
       onMove();
     }
     function onMove() {
@@ -641,19 +860,27 @@ function driver() {
       map.panTo([loc.lat, loc.lng]);
       if (pr.offRoute > 80 && !rerouting && !simulate) { rerouting = true; route(loc, phase === 'pickup' ? trip.pickup : trip.dest).then(r => { rt = r; line?.setLatLngs(r.latlngs); lastStep = null; setTimeout(() => rerouting = false, 10000); }); }
     }
-    function arrived() { phase = 'waiting'; bus.publish('trip/' + trip.id, { type: 'arrived', driver: me.id }); speak('Arrived. Waiting for rider.');
-      sheet.innerHTML = `<h2>Waiting for ${esc(trip.rider.name)}</h2><p class="muted">The rider has been notified you're here.</p><button class="btn" id="start">Start trip</button><button class="btn link" id="dcx">Rider no-show — cancel</button>`;
-      $('#start').onclick = () => { bus.publish('trip/' + trip.id, { type: 'start', driver: me.id }); navTo('trip'); };
-      $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); endTrip(); idle(); };
+    const ev = (type, data) => { const id = trip?.id; if (id) cloudP.then(c => c.rideEvent(id, type, data)).catch(e => console.warn('ride record', e.message)); };
+    function arrived() { phase = 'waiting'; bus.publish('trip/' + trip.id, { type: 'arrived', driver: me.id }); ev('arrived'); speak('Arrived. Waiting for rider.');
+      sheet.innerHTML = `<h2>Waiting for ${esc(trip.rider.name)}</h2><p class="muted">The rider has been notified you're here.</p>${trip.wav ? `<p class="ds-badge up">${ic('user', 'sm')}Wheelchair-accessible ride — deploy ramp/lift</p>` : ''}
+      <label class="pinin">Ask the rider for their 4-digit ride PIN<input id="pinin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="••••"></label><p class="err" id="pinerr" hidden>That PIN doesn't match. Check you have the right rider.</p>
+      <button class="btn" id="start" ${trip.pinHash ? 'disabled' : ''}>Start trip</button><button class="btn link" id="dcx">Rider no-show — cancel</button>`;
+      $('#pinin').oninput = (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4); $('#start').disabled = e.target.value.length !== 4 && !!trip.pinHash; $('#pinerr').hidden = true; };
+      $('#start').onclick = async () => { if (trip.pinHash && (await sha(trip.id + ':' + $('#pinin').value)) !== trip.pinHash) { $('#pinerr').hidden = false; navigator.vibrate?.(200); return; }
+        trip.startedAt = Date.now(); bus.publish('trip/' + trip.id, { type: 'start', driver: me.id }); ev('start'); navTo('trip'); };
+      $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); ev('cancel_driver'); endTrip(); idle(); };
     }
     function complete() {
       const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked — no surprises
-      bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, lines: f.lines, meters: rt.distance, seconds: rt.duration });
+      bus.publish('trip/' + trip.id, { type: 'complete', driver: me.id, fare: f.total, lines: f.lines, meters: rt.distance, seconds: rt.duration }); ev('complete', { fare: f.total });
+      const done = { id: trip.id, pay: trip.pay || 'cash', fare: f.total };
       try { learn.record({ pickup: trip.pickup, dest: trip.dest, waitSec: null, rideSec: rt.duration }); } catch {}
-      const h = store.get('history_driver', []); h.unshift({ id: trip.id, date: new Date().toISOString(), fare: f.total, to: trip.dest.label, rider: trip.rider.name }); store.set('history_driver', h.slice(0, 500));
+      const h = store.get('history_driver', []); h.unshift({ id: trip.id, startAt: trip.startedAt || null, endAt: Date.now(), date: new Date().toISOString(), fare: f.total, to: trip.dest.label, rider: trip.rider.name }); store.set('history_driver', h.slice(0, 500));
       speak('Trip complete. Collect ' + f.total.toFixed(2) + ' dollars.');
-      sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect exactly · <b>${PAYMENTS[trip.pay || 'cash']}</b>${trip.pay && trip.pay !== 'cash' ? '<div class="fine">Rider chose ' + PAYMENTS[trip.pay] + ' — do not ask for cash.</div>' : ''}</div><div class="price">${money(f.total)}</div></div><div class="card"><div class="row"><span>You keep (70%)</span><b>${money(split(f.total).driver)}</b></div><div class="row"><span>Rocapulco (30%)</span><span>${money(split(f.total).company)}</span></div></div><p class="fine">Collect payment directly (cash, your card reader, Zelle or Venmo). Tolls extra.</p><button class="btn" id="bk">Back online</button>`;
+      sheet.innerHTML = `<h2 id="tdone">Trip complete</h2><div class="card fare"><div>Collect exactly · <b>${PAYMENTS[trip.pay || 'cash']}</b>${trip.pay && trip.pay !== 'cash' ? '<div class="fine">Rider chose ' + PAYMENTS[trip.pay] + ' — do not ask for cash.</div>' : ''}</div><div class="price">${money(f.total)}</div></div><div class="card"><div class="row"><span>You keep (70%)</span><b>${money(split(f.total).driver)}</b></div><div class="row"><span>Rocapulco (30%)</span><span>${money(split(f.total).company)}</span></div></div><p class="fine">Collect payment directly (cash, your card reader, Zelle or Venmo). Tolls extra.</p><button class="btn steel big" id="mpaid">${ic('check')}Mark as paid · ${PAYMENTS[done.pay]}</button><button class="btn alt" id="bk">Back online</button>`;
       endTrip(); $('#bk').onclick = idle;
+      $('#mpaid').onclick = () => { bus.publish('trip/' + done.id, { type: 'paid', driver: me.id, method: done.pay, fare: done.fare }); cloudP.then(c => c.rideEvent(done.id, 'paid', { method: done.pay })).catch(e => console.warn('ride record', e.message));
+        const h2 = store.get('history_driver', []); if (h2[0]?.id === done.id) { h2[0].paid = true; store.set('history_driver', h2); } $('#mpaid').outerHTML = `<p class="nosurge" id="paidok">${ic('check')} Marked paid · ${money(done.fare)} by ${PAYMENTS[done.pay]}</p>`; };
     }
     function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(true); startGPS(); }
     idle();
@@ -669,8 +896,9 @@ function admin() {
   <div id="open" class="queue"></div>
   <div class="lbl">${ic('car')}Drivers · location freshness</div><div id="dfresh" class="dfresh"></div>
   <div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
-  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Driver review</h3><div id="rev"><p class="muted">Loading…</p></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
+  import('./cloud.js').then(c => c.mountReview($('#rev')).then(f => every(() => document.contains($('#rev')) && f(), 60000))).catch(e => { if ($('#rev')) $('#rev').innerHTML = '<p class="muted">Review list unavailable.</p>'; });
   import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0; const rmk = new Map();
   const ridePin = (t) => icon(`<b>${esc(initials(t.rider))}</b><span class="rp-f">${money(t.fare || 0).replace('.00', '')}</span>`, 'pin a ride');
@@ -692,6 +920,7 @@ function admin() {
     mk.forEach((m, id) => { if (!on.find(d => d.id === id)) { m.remove(); mk.delete(id); } });
     const list = [...trips.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
     const open = list.filter(t => ['requested', 'offered', 'reassigning', 'scheduled, dispatching'].includes(t.state));
+    open.filter(t => !t.assigned && !t.late && now - t.ts > 180000).forEach(t => { t.late = true; notify(`${t.rider} has waited over 3 minutes with no driver — assign or call them`); speak('Rider waiting over three minutes'); });
     const qNew = open.filter(t => !t.assigned), qAs = list.filter(t => t.assigned && open.includes(t) || t.state === 'driver en route' || t.state === 'driver arrived'), qOn = list.filter(t => t.state === 'in trip');
     $('#qn') && ($('#qn').textContent = qNew.length); $('#qa') && ($('#qa').textContent = qAs.length); $('#qo') && ($('#qo').textContent = qOn.length);
     rmk.forEach((m, id) => { if (!open.find(t => t.id === id)) { m.remove(); rmk.delete(id); } });
@@ -704,7 +933,7 @@ function admin() {
     const av = avail();
     if ($('#open')) {
       $('#open').innerHTML = shown.length ? shown.map(t => { const canAssign = qtab !== 'ontrip' && open.includes(t);
-        return `<div class="card assign" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}<div class="muted">${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
+        return `<div class="card assign ${!t.assigned && now - t.ts > 180000 ? 'late' : ''}" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}<div class="muted">${t.ref ? `<span class="ds-badge flat" title="First ride from a referral link">Referred · ${esc(t.ref)}</span> ` : ''}${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
         ${canAssign ? `<div class="drvs">${av.length ? av.map(d => ({ d, e: etaOf(d, t.pickup) })).sort((a, b) => a.e - b.e).slice(0, 3).map(({ d, e }, k) => `<button class="btn assignb" data-a="${esc(d.id)}"><span class="ell">Assign ${esc(d.name)}</span><b>${fmtMin(e)}</b>${k ? '' : '<small>nearest</small>'}</button>`).join('') : '<span class="muted">' + ic('alert', 'sm') + ' No available drivers online</span>'}</div>` : ''}</div>`; }).join('') : `<p class="muted">${{ new: 'No riders waiting.', assigned: 'Nothing assigned right now.', ontrip: 'No rides in progress.' }[qtab]}</p>`;
       $('#open').querySelectorAll('[data-a]').forEach(b => b.onclick = () => assignTo(b.closest('[data-t]').dataset.t, b.dataset.a));
       // drag-to-assign: drag a waiting ride onto a driver row, or a driver row onto a ride
@@ -720,11 +949,17 @@ function admin() {
     $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>${ic('alert')} ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}${r.reason ? ' · ' + esc(r.reason.replace('_', ' ')) : ''}${r.fare ? ' · ' + money(r.fare) : ''}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
     $('#tl') && ($('#tl').innerHTML = list.map(t => `<div class="card hist"><div><b>${esc(t.rider)} → ${esc(t.to)}</b><div class="muted">${esc(t.state)}${t.driver ? ' · ' + esc(t.driver) : ''} · ${new Date(t.ts).toLocaleTimeString()}</div></div><b>${money(t.fare || 0)}</b></div>`).join(''));
   };
-  sub('drivers/+', (d) => { drivers.set(d.id, d); if (d.status === 'offline') return draw(); if (!mk.has(d.id)) mk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).bindTooltip(`${d.name} · ${d.status}`).addTo(layer)); else { animateTo(mk.get(d.id), [d.lat, d.lng]); mk.get(d.id).setTooltipContent(`${d.name} · ${d.status}`); } draw(); });
-  sub('reports/+', (r) => { reports.unshift(r); draw(); });
-  sub('trip/+', (m, topic) => {
+  vsub('drivers/+', (d, _t, v) => { if (!isSim(d) && !(v?.staff && STAFF.includes(v.role))) return rejected('presence', d);
+    const prev = drivers.get(d.id); if (prev && !isSim(d) && prev.kid && prev.kid !== v.kid) return rejected('presence id reuse', d); if (v) d.kid = v.kid; drivers.set(d.id, d); if (d.status === 'offline') return draw(); if (!mk.has(d.id)) mk.set(d.id, L.marker([d.lat, d.lng], { icon: carIcon(d) }).bindTooltip(`${d.name} · ${d.status}`).addTo(layer)); else { animateTo(mk.get(d.id), [d.lat, d.lng]); mk.get(d.id).setTooltipContent(`${d.name} · ${d.status}`); } draw(); });
+  vsub('reports/+', (r, _t, v) => { if (!isSim(r) && !(v?.rider && !v.selfCert && v.tid === r.trip) && !v?.staff) return rejected('report', r); reports.unshift(r); draw(); });
+  vsub('trip/+', async (m, topic, v) => {
     const id = topic.split('/')[1];
-    if (m.type === 'request' && !trips.has(id)) trips.set(id, { id, full: m.trip, pickup: m.trip.pickup, pay: m.trip.pay, rider: m.trip.rider.name, to: m.trip.dest.label.split(',')[0], fare: m.trip.fare, ts: m.trip.ts, state: m.trip.scheduledFor ? 'scheduled, dispatching' : 'requested' });
+    if (!isSim(m)) {
+      if (m.type === 'request') { if (!(v?.rider && v.tid === id && m.trip?.id === id) || !(await bookingOk(m.trip))) return rejected('request', m); tripPubs.set(id, m.trip.riderPub); }
+      else { const fromStaff = ['accept', 'arrived', 'start', 'complete', 'decline', 'assign'].includes(m.type) || (m.type === 'cancel' && m.by === 'driver');
+        if (fromStaff ? !(v?.staff && STAFF.includes(v.role)) : !(v?.rider && v.tid === id && !v.selfCert)) return; }
+    }
+    if (m.type === 'request' && !trips.has(id)) trips.set(id, { ref: m.trip.ref || null, id, full: m.trip, pickup: m.trip.pickup, pay: m.trip.pay, rider: m.trip.rider.name, to: m.trip.dest.label.split(',')[0], fare: m.trip.fare, ts: m.trip.ts, state: m.trip.scheduledFor ? 'scheduled, dispatching' : 'requested' });
     const t = trips.get(id); if (!t) return;
     const st = { accept: 'driver en route', arrived: 'driver arrived', start: 'in trip', complete: 'completed', cancel: m.reason === 'driver_no_show' ? 'cancelled — driver no-show' : m.by === 'driver' ? 'reassigning' : 'cancelled', reassign: 'reassigning', request: t.state === 'reassigning' ? 'requested' : null }[m.type];
     if (st) t.state = st; if (m.type === 'accept') { t.driver = m.driver.name; t.assigned = null; } if (m.type === 'complete') { t.fare = m.fare; earned += m.fare; } draw();
@@ -733,10 +968,12 @@ function admin() {
 }
 
 let staff = null; // set by the staff gate in the driver / dispatch apps
-async function router() { reset(); let r = location.hash.replace('#/', '');
-  if (APP === 'rider') { if (r === 'driver' || r === 'admin') { location.replace(new URL(r === 'driver' ? 'driver/' : 'dispatch/', import.meta.url).href); return; } if (r && r !== 'rider') r = ''; }
+async function router() { reset(); let r = location.hash.replace('#/', '').split('?')[0];
+  if (APP === 'rider') { if (r === 'driver' || r === 'admin') { location.replace(new URL(r === 'driver' ? 'driver/' : 'dispatch/', import.meta.url).href); return; } if (r && r !== 'rider') r = ''; if (!r && DL.get('to')) r = 'rider'; }
   else { r = APP === 'driver' ? 'driver' : 'admin';
-    if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] }); reset(); } }
+    if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] });
+      try { signer = await c.staffSigner(); } catch (e) { sheet.innerHTML = `<h2>Secure sign-in failed</h2><p class="muted">Couldn't set up this device's signing key (${esc(e.message)}). Check your connection and reload. Dispatch: ${DISPATCH_PHONE}</p><button class="btn" onclick="location.reload()">Reload</button>`; staff = null; return; }
+      reset(); } }
   document.body.dataset.view = r || 'home'; ({ rider, driver, admin }[r] || home)(); setTimeout(() => map.invalidateSize(), 50); }
 // Draggable bottom sheet on phones: peek 120px / half / full, spring-ish release.
 (function sheetDrag() {
@@ -747,6 +984,8 @@ async function router() { reset(); let r = location.hash.replace('#/', '');
     sheet.style.transition = 'height .4s cubic-bezier(.32,.72,0,1),max-height .4s cubic-bezier(.32,.72,0,1)'; sheet.style.maxHeight = sheet.style.height = s + 'px'; sheet.dataset.snap = s === 120 ? 'peek' : s > innerHeight * .7 ? 'full' : 'half'; if (!moved) { sheet.style.height = ''; sheet.style.maxHeight = ''; delete sheet.dataset.snap; } });
   addEventListener('hashchange', () => { sheet.style.height = ''; sheet.style.maxHeight = ''; delete sheet.dataset.snap; });
 })();
+if (APP === 'rider') { const h = document.querySelector('header'); if (h && !$('#lang')) { const b = document.createElement('button'); b.id = 'lang'; b.className = 'net langb'; b.textContent = lang() === 'es' ? 'EN' : 'ES'; b.setAttribute('aria-label', lang() === 'es' ? 'Switch to English' : 'Cambiar a español'); b.onclick = () => setLang(lang() === 'es' ? 'en' : 'es'); h.insertBefore(b, $('#net')); }
+  initI18n([sheet, document.body]); }
 addEventListener('hashchange', router); splash(); router();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(new URL('sw.js', import.meta.url).href);
-window.__qc = { bus, NS };
+window.__qc = { bus, NS, raw: rawPublish, sim: (t, m) => bus.publish(t, { ...m, _sim: SIM_SECRET }, { localOnly: true }) };

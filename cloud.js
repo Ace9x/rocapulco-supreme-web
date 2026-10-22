@@ -6,7 +6,7 @@ let _sb; export async function sb() { if (_sb) return _sb; const { createClient 
 const must = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
 const flat = d => /jfk|kennedy/i.test(d || '') ? 'JFK' : /laguardia|lga/i.test(d || '') ? 'LGA' : null;
 export async function bookRide(t) { const c = await sb(); const r = must(await c.rpc('book_ride', { p: { ext_id: t.id, rider_name: t.rider?.name, rider_phone: t.rider?.phone, pickup_address: t.pickup?.name || t.pickup?.label || t.pickup?.address || 'Pickup', pickup_lat: t.pickup?.lat, pickup_lng: t.pickup?.lng,
-  dropoff_address: t.dest?.name || t.dest?.label || t.dest?.address || 'Dropoff', dropoff_lat: t.dest?.lat, dropoff_lng: t.dest?.lng, est_miles: t.miles, est_minutes: t.minutes, flat_rate: flat(t.dest?.name || t.dest?.label), vehicle_class: t.vclass === 'suv' ? 'suv' : 'sedan', payment_method: t.pay, scheduled_for: t.scheduledFor ? new Date(t.scheduledFor).toISOString() : null } }))[0];
+  dropoff_address: t.dest?.name || t.dest?.label || t.dest?.address || 'Dropoff', dropoff_lat: t.dest?.lat, dropoff_lng: t.dest?.lng, est_miles: t.miles, est_minutes: t.minutes, flat_rate: flat(t.dest?.name || t.dest?.label), vehicle_class: t.vclass === 'suv' ? 'suv' : 'sedan', rider_pub: t.riderPub || null, payment_method: t.pay, scheduled_for: t.scheduledFor ? new Date(t.scheduledFor).toISOString() : null } }))[0];
   const mine = JSON.parse(localStorage.getItem('roca_server_rides') || '{}'); mine[t.id] = { id: r.id, token: r.token }; localStorage.setItem('roca_server_rides', JSON.stringify(mine)); return r; }
 const ref = extId => JSON.parse(localStorage.getItem('roca_server_rides') || '{}')[extId];
 export async function cancelRide(extId) { const k = ref(extId); if (!k) return; const c = await sb(); return must(await c.rpc('rider_cancel', { p_id: k.id, p_token: k.token })); }
@@ -111,3 +111,69 @@ export async function mountRiderAccount(el, onChange = () => {}) { const p = awa
       else { const r = await emailSignUp(f.email.value.trim(), f.password.value, ''); r.session ? draw() : draw('Account created. Check your email to confirm, then sign in.'); } } catch (e) { ram.textContent = niceErr(e); } };
     f.onsubmit = e => { e.preventDefault(); go('in'); }; f.querySelector('[data-a=up]').onclick = () => go('up'); };
   c.auth.onAuthStateChange(e => { if (e === 'SIGNED_IN' || e === 'SIGNED_OUT') setTimeout(() => draw(), 0); }); return draw(); }
+// ---- signed relay: staff signing key (one per signed-in staff user on this device) + public key lookup
+import { newKeyPair, importPriv } from './sign.js';
+export async function staffSigner() { const c = await sb(); const { data } = await c.auth.getSession(); const uid = data.session?.user?.id; if (!uid) throw new Error('not signed in');
+  const LS = 'roca_staff_key_' + uid; let st = null; try { st = JSON.parse(localStorage.getItem(LS)); } catch {}
+  if (st?.kid && (await staffKey(st.kid))) return { kid: st.kid, priv: await importPriv(st.priv) };
+  const k = await newKeyPair(); const kid = must(await c.rpc('register_staff_key', { p_pub: k.pub }));
+  localStorage.setItem(LS, JSON.stringify({ kid, priv: k.privJwk })); keyCache.delete(kid); return { kid, priv: k.priv }; }
+const keyCache = new Map();
+export async function staffKey(kid) { if (!/^[0-9a-f-]{36}$/i.test(kid || '')) return null; const hit = keyCache.get(kid); if (hit && Date.now() - hit.t < 300e3) return hit.v;
+  const c = await sb(); const { data, error } = await c.rpc('staff_key', { p_kid: kid }); if (error) return null; const v = data?.[0] || null; keyCache.set(kid, { t: Date.now(), v }); return v; }
+export async function verifyBooking(extId) { const c = await sb(); const { data, error } = await c.rpc('verify_booking', { p_ext: extId }); if (error) throw new Error(error.message); return data?.[0] || null; }
+// ---- compliance: driver documents, go-online gate, ride records, complaints
+export async function myDocs() { const c = await sb(); const { data } = await c.auth.getSession(); if (!data.session) return null; return must(await c.from('taxi_driver_docs').select('*').eq('user_id', data.session.user.id).maybeSingle()); }
+export async function saveDocs(p) { const c = await sb(); return must(await c.rpc('save_driver_docs', { p })); }
+export async function driverReady() { const c = await sb(); return must(await c.rpc('driver_ready'))[0]; }
+export async function rideEvent(ext, type, data = {}) { const c = await sb(); return must(await c.rpc('ride_event', { p_ext: ext, p_type: type, p_data: data })); }
+const cardCache = new Map();
+export async function driverCard(kid) { if (!/^[0-9a-f-]{36}$/i.test(kid || '')) return null; if (cardCache.has(kid)) return cardCache.get(kid); const c = await sb(); const v = must(await c.rpc('driver_card', { p_kid: kid }))[0] || null; cardCache.set(kid, v); return v; }
+export async function fileComplaint(extId, reason, details, driver, plate) { const k = ref(extId); if (!k) throw new Error('no server booking for this ride'); const c = await sb(); return must(await c.rpc('file_complaint', { p_id: k.id, p_token: k.token, p_reason: reason, p_details: details, p_driver: driver, p_plate: plate })); }
+export async function listDocs() { const c = await sb(); return must(await c.from('taxi_driver_docs').select('*').order('updated_at', { ascending: false }).limit(50)); }
+export async function reviewDriver(user, status, note, handleOk) { const c = await sb(); return must(await c.rpc('review_driver', { p_user: user, p_status: status, p_note: note || null, p_handle_ok: handleOk })); }
+export async function riderContact(ext) { const c = await sb(); return must(await c.rpc('rider_contact', { p_ext: ext }))[0] || null; }
+
+// ---- Dispatch quick-review: applicants (public apply form) + drivers' document updates ----
+const DOCN = { license: 'DMV license', tlc: 'TLC license', insurance: 'Insurance', registration: 'Registration' };
+export async function listApplications() { const c = await sb(); return must(await c.from('taxi_applications').select('id,name,phone,email,area,lang,has_tlc,tlc_license,vehicle,fhv_plate,wav,status,review_note,needs,invite_code,updated_at').in('status', ['submitted', 'needs_doc', 'approved']).order('updated_at', { ascending: false }).limit(30)); }
+export async function applicationDocs(id) { const c = await sb(); return must(await c.from('taxi_application_docs').select('kind,photo,sharpness,blurry,expires').eq('app_id', id)); }
+export async function reviewApplication(id, status, note, needs) { const c = await sb(); return must(await c.rpc('apply_review', { p_id: id, p_status: status, p_note: note || null, p_needs: needs || null })); }
+export async function mountReview(el) {
+  const day = d => d ? new Date(d + 'T12:00:00') : null, expChip = d => { const x = day(d); if (!x) return '<span class="dchip bad">no expiry date</span>'; const days = Math.round((x - Date.now()) / 864e5);
+    return `<span class="dchip ${days < 0 ? 'bad' : days < 30 ? 'warn' : 'ok'}">${days < 0 ? 'expired' : 'exp'} ${esc(d)}</span>`; };
+  async function draw() {
+    let apps = [], docs = []; try { [apps, docs] = await Promise.all([listApplications(), listDocs()]); } catch (e) { el.innerHTML = `<p class="muted">Review list unavailable: ${esc(e.message)}</p>`; return; }
+    const pend = docs.filter(d => d.review_status === 'pending' || d.review_status === 'needs_doc');
+    const open = apps.filter(a => a.status !== 'approved'), done = apps.filter(a => a.status === 'approved').slice(0, 5);
+    el.innerHTML = (open.length || pend.length ? '' : '<p class="muted">Nothing to review. New applicants from the careers page show up here.</p>') +
+      open.map(a => `<div class="card rev" data-app="${esc(a.id)}"><div class="qrow"><div class="grow"><b>${esc(a.name || 'Applicant')}</b> <span class="ds-badge ${a.status === 'needs_doc' ? 'up' : 'flat'}">${a.status === 'needs_doc' ? 'waiting on docs' : 'new applicant'}</span>
+        <div class="muted">${esc(a.area || '')} · ${a.has_tlc ? 'TLC #' + esc(a.tlc_license || '—') : 'no TLC license yet'} · ${esc(a.vehicle || 'vehicle —')} ${a.fhv_plate ? '· plate ' + esc(a.fhv_plate) : ''}${a.wav ? ' · WAV' : ''}${a.lang === 'es' ? ' · habla español' : ''}</div>
+        ${a.phone ? `<a class="btn sm" href="tel:${esc(a.phone)}">Call ${esc(a.phone)}</a>` : ''}</div></div><div class="appdocs muted">Loading documents…</div>
+        <div class="revb"><button class="btn sm" data-act="approve">Approve</button><button class="btn sm" data-act="ask">Request a document</button><button class="btn sm ghost" data-act="decline">Decline</button></div><div class="revx"></div></div>`).join('') +
+      pend.map(d => `<div class="card rev" data-drv="${esc(d.user_id)}"><div><b>Driver documents</b> <span class="ds-badge up">${esc(d.review_status)}</span><div class="muted">TLC #${esc(d.tlc_driver_license || '—')} · vehicle ${esc(d.tlc_vehicle_license || '—')} · plate ${esc(d.plate || '—')}${d.wav ? ' · WAV' : ''}</div>
+        <div>${['dmv_exp', 'tlc_exp', 'reg_exp', 'ins_exp'].map(k => `<small>${k.slice(0, 3).toUpperCase()}</small> ${expChip(d[k])}`).join(' ')}</div>${d.pay_handle ? `<label class="row"><input type="checkbox" class="hok" ${d.handle_verified ? 'checked' : ''}> ${esc(d.pay_kind)} handle <b>${esc(d.pay_handle)}</b> checked by phone</label>` : ''}</div>
+        <div class="revb"><button class="btn sm" data-act="approve">Approve</button><button class="btn sm" data-act="ask">Request a document</button><button class="btn sm ghost" data-act="decline">Decline</button></div><div class="revx"></div></div>`).join('') +
+      (done.length ? '<div class="lbl">Recently approved — send them their invite link</div>' + done.map(a => { const link = new URL('driver/?invite=' + a.invite_code, new URL('./', import.meta.url)).href;
+        return `<div class="card hist"><div><b>${esc(a.name)}</b><div class="muted ell">${esc(link)}</div></div><span><button class="btn sm" data-copy="${esc(link)}">Copy link</button>${a.phone ? ` <a class="btn sm" href="sms:${esc(a.phone)}?&body=${encodeURIComponent('Rocapulco: you are approved to drive. Open this link to set up the driver app: ' + link)}">Text it</a>` : ''}</span></div>`; }).join('') : '');
+    el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; }));
+    el.querySelectorAll('[data-app]').forEach(async card => { const id = card.dataset.app; const box = card.querySelector('.appdocs');
+      try { const ds = await applicationDocs(id); const have = Object.fromEntries(ds.map(d => [d.kind, d]));
+        box.innerHTML = Object.keys(DOCN).map(k => { const d = have[k]; return d ? `<a href="${esc(d.photo)}" target="_blank" class="adoc"><img alt="${DOCN[k]}" src="${esc(d.photo)}"><span>${DOCN[k]}</span>${d.blurry ? '<span class="dchip warn">blurry</span>' : ''}${expChip(d.expires)}</a>` : `<span class="adoc miss"><span>${DOCN[k]}</span><span class="dchip bad">missing</span></span>`; }).join('');
+      } catch (e) { box.textContent = 'Documents unavailable: ' + e.message; } });
+    el.querySelectorAll('.rev').forEach(card => card.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(card, b.dataset.act)));
+  }
+  function act(card, what) {
+    const x = card.querySelector('.revx'), isApp = !!card.dataset.app;
+    const run = async (status, note, needs) => { x.textContent = 'Saving…';
+      try { if (isApp) { await reviewApplication(card.dataset.app, status, note, needs); } else await reviewDriver(card.dataset.drv, status, note, card.querySelector('.hok')?.checked ?? null); await draw(); }
+      catch (e) { x.innerHTML = `<span class="err">${esc(e.message)}</span>`; } };
+    if (what === 'approve') return run('approved', null);
+    if (what === 'decline') { x.innerHTML = `<input class="rnote" placeholder="Reason (the applicant sees this)" maxlength="300"><button class="btn sm" data-go>Decline</button>`; x.querySelector('[data-go]').onclick = () => run('declined', x.querySelector('.rnote').value); return; }
+    x.innerHTML = `<div class="row">${Object.entries(DOCN).map(([k, n]) => `<label><input type="checkbox" value="${k}"> ${n}</label>`).join(' ')}</div><div class="pop rsn">${['Photo is blurry', 'Document expired', 'Wrong document', 'Name doesn’t match', 'Corner cut off'].map(r => `<button type="button" class="ds-chip" data-rsn="${r}">${r}</button>`).join('')}</div><input class="rnote" placeholder="What to fix, e.g. photo is blurry" maxlength="300"><button class="btn sm" data-go>Send request</button>`;
+    x.querySelectorAll('[data-rsn]').forEach(b => b.onclick = () => { const n = x.querySelector('.rnote'); n.value = n.value ? n.value + '; ' + b.dataset.rsn : b.dataset.rsn; });
+    x.querySelector('[data-go]').onclick = () => { const needs = [...x.querySelectorAll('input[type=checkbox]:checked')].map(i => i.value); const note = x.querySelector('.rnote').value;
+      if (!needs.length && !note.trim()) { x.querySelector('.rnote').placeholder = 'Pick a document or write a note'; return; } run('needs_doc', note || ('Please re-upload: ' + needs.map(k => DOCN[k]).join(', ')), needs); };
+  }
+  await draw(); return draw;
+}

@@ -1,13 +1,13 @@
 import { test, expect } from '@playwright/test'; import { newCtx, appUrl } from './staff-session.mjs';
-const BASE = process.env.BASE || 'http://localhost:8099/', OUT = '/workspace/taxi-shots/v6/';
+const BASE = process.env.BASE || 'http://localhost:8099/', OUT = '/workspace/taxi-shots/v7/';
 test.setTimeout(480000);
 for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { width: 1440, height: 900 }, false]]) {
-  test(`v6 screens ${tag}`, async ({ browser }) => {
+  test(`v7 screens ${tag}`, async ({ browser }) => {
     const ctx = await newCtx(browser, { viewport: vp, isMobile: mob, hasTouch: mob, deviceScaleFactor: mob ? 2 : 1, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
     const p = await ctx.newPage(), errs = [];
     p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|tile|ERR_/i.test(m.text())) errs.push(m.text()); });
     p.on('pageerror', e => errs.push(e.message));
-    const NSV = `?transport=local&ns=v6${tag}${Date.now()}&speed=20`, u = (h) => appUrl(BASE, NSV, h);
+    const NSV = `?transport=local&ns=v7${tag}${Date.now()}&speed=20`, u = (h) => appUrl(BASE, NSV, h);
     await p.goto(u('#/')); await expect(p.locator('#splash')).toBeVisible(); await p.waitForTimeout(700); await p.screenshot({ path: OUT + `${tag}-00-splash.png` });
     await expect(p.locator('#splash')).toHaveCount(0, { timeout: 4000 });
     await p.click('#onbskip');
@@ -15,10 +15,20 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     const fineC = await p.evaluate(() => getComputedStyle(document.querySelector('.fine') || document.body).color); expect(fineC).toBe('rgb(163, 163, 163)');
     const ab = await p.locator('.maplibregl-ctrl-attrib').boundingBox(), hb = await p.locator('header').boundingBox(); if (ab) expect(ab.y).toBeGreaterThanOrEqual(hb.y + hb.height - 4);
     await p.screenshot({ path: OUT + `${tag}-01-home.png` }); await p.click('#fares'); await p.screenshot({ path: OUT + `${tag}-01b-fares.png` });
-    await p.evaluate(() => { localStorage.setItem('qc_profile_rider', JSON.stringify({ name: 'Ana Rivera', phone: '7185550123', id: 'rdr-x' })); });
+    await p.evaluate(() => { localStorage.setItem('qc_profile_rider', JSON.stringify({ name: 'Ana Rivera', phone: '718' + String(Math.random()).slice(2, 9), id: 'rdr-x' })); });
     await p.goto(u('#/rider')); await expect(p.locator('#sc [data-sc=jfk]')).toContainText('$75'); await expect(p.locator('#sc [data-sc=lga]')).toContainText('$82.50');
     await expect(p.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
     await p.screenshot({ path: OUT + `${tag}-02-where-to.png` });
+    // local knowledge: terminal picker (arrivals -> pickup + meet note), landmarks, Queens address variants, cross street
+    await p.click('#terms-open'); await p.click('#airp [data-ap=LGA]'); await p.click('#airp [data-dir=arr]'); await expect(p.locator('#meet')).toContainText('Arrivals');
+    await p.screenshot({ path: OUT + `${tag}-02b-terminals.png` });
+    await p.locator('#airp [data-tm]').nth(1).click(); await expect(p.locator('#pu')).toHaveValue(/LaGuardia Airport Terminal B/); await expect(p.locator('#note')).toHaveValue(/Arrivals LGA B/);
+    await p.fill('#cross', 'Departures roadway'); await p.fill('#side', 'Door 4');
+    await p.locator('#lmk [data-lm]').filter({ hasText: 'Citi Field' }).click(); await expect(p.locator('#de')).toHaveValue(/Citi Field/); await expect(p.locator('#fare')).toContainText('$', { timeout: 25000 });
+    await p.screenshot({ path: OUT + `${tag}-02c-landmark-quote.png` });
+    await p.fill('#de', '12345 101 Ave'); await expect(p.locator('#del li').first()).toBeVisible({ timeout: 15000 });
+    await p.screenshot({ path: OUT + `${tag}-02d-queens-address.png` });
+    await p.goto(u('#/rider'));
     await p.locator('#sc [data-sc=jfk]').click(); await expect(p.locator('#fare')).toHaveText('$75.00', { timeout: 25000 });
     await expect(p.locator('#vc [data-v=sedan] .ds-badge.flat')).toContainText("Flat — won't change");
     await expect(p.locator('#vc [data-v=suv] .vp')).toHaveText('$112.50');
@@ -32,7 +42,7 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
       const sb2 = await p.locator('#sheet').boundingBox(); await p.mouse.move(195, sb2.y + 10); await p.mouse.down(); await p.mouse.move(195, 150, { steps: 8 }); await p.mouse.up(); await expect(p.locator('#sheet')).toHaveAttribute('data-snap', 'full'); }
     await p.locator('#req').scrollIntoViewIfNeeded(); await p.check('#agree'); await p.click('#req');
     await expect(p.locator('.radar-ui')).toBeVisible(); await p.screenshot({ path: OUT + `${tag}-03c-searching-radar.png` });
-    await expect(p.locator('#st')).toBeVisible({ timeout: 40000 }); await expect(p.locator('#trust')).toContainText('$75.00');
+    await expect(p.locator('#st')).toBeVisible({ timeout: 40000 }); await expect(p.locator('#trust')).toContainText('$75.00'); await expect(p.locator('#pin')).toHaveText(/^\d{4}$/);
     await p.waitForTimeout(1500); await p.screenshot({ path: OUT + `${tag}-04-trip-trust-banner.png` });
     await p.click('#ropt'); await expect(p.locator('#rmenu')).toBeVisible(); await expect(p.locator('#rmenu .ra')).toHaveCount(await p.locator('#rmenu .ra').count());
     await expect(p.locator('#rmenu')).toContainText('Share trip'); await expect(p.locator('#rmenu')).toContainText('Edit drop-off'); await expect(p.locator('#rmenu')).toContainText('Safety');
@@ -47,7 +57,7 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     await p.click('#fin'); await p.click('#hist'); await p.locator('.hist.trip').first().click(); await expect(p.locator('#rcpt')).toBeVisible(); await p.screenshot({ path: OUT + `${tag}-08-history-receipt.png` });
     // dispatch: seed a stale + a fresh driver and a waiting trip
     await p.goto(u('#/admin')); await expect(p.locator('#qtabs')).toBeVisible({ timeout: 20000 });
-    await p.evaluate(() => { const b = window.__qc.bus, now = Date.now();
+    await p.evaluate(() => { const b = { publish: (t, m) => window.__qc.sim(t, m) }, now = Date.now();
       b.publish('drivers/dx1', { id: 'dx1', name: 'Marcus', car: 'Cadillac XTS', plate: 'T710', status: 'available', lat: 40.606, lng: -73.757, ts: now }, { localOnly: true });
       b.publish('drivers/dx2', { id: 'dx2', name: 'Priya', car: 'Escalade', plate: 'T427', status: 'available', lat: 40.600, lng: -73.748, ts: now - 95000 }, { localOnly: true });
       b.publish('drivers/dx3', { id: 'dx3', name: 'Luis', car: 'CT6', plate: 'T944', status: 'available', lat: 40.612, lng: -73.762, ts: now - 4000 }, { localOnly: true });
@@ -65,7 +75,12 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     await p.click('#qtabs [data-q=assigned]'); await expect(p.locator('#open')).toContainText('assigned to Luis');
     await p.screenshot({ path: OUT + `${tag}-10-dispatch-assigned.png` });
     await p.evaluate(() => localStorage.setItem('qc_profile_driver', JSON.stringify({ name: 'Luis Ortiz', phone: '7185550111', car: 'Cadillac Escalade', plate: 'T778812C', id: 'drv-x' })));
-    await p.goto(u('#/driver')); await expect(p.locator('#tg')).toBeVisible({ timeout: 20000 }); await p.waitForTimeout(1000); await p.screenshot({ path: OUT + `${tag}-11-driver-steel.png` });
+    await p.goto(u('#/driver')); await expect(p.locator('#tg')).toBeVisible({ timeout: 20000 }); await expect(p.locator('#docs')).toBeVisible(); await p.locator('#docs').evaluate(e => e.open = true);
+    await expect(p.locator('#docs .dchip')).toHaveCount(4); await p.waitForTimeout(800); await p.screenshot({ path: OUT + `${tag}-11-driver-docs.png` });
+    // Spanish
+    await p.goto(u('#/')); await p.click('#lang'); await p.waitForLoadState(); await expect(p.locator('#go-rider')).toContainText('Pedir un viaje', { timeout: 10000 });
+    await p.goto(u('#/rider')); await expect(p.locator('#sheet')).toContainText('¿A dónde vamos?'); await p.screenshot({ path: OUT + `${tag}-12-espanol.png` });
+    await p.click('#lang'); await p.waitForLoadState(); await expect(p.locator('#sheet')).toContainText('Where to?', { timeout: 10000 });
     expect(errs, errs.join('\n')).toEqual([]);
   });
 }

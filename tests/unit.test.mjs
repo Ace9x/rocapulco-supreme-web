@@ -102,3 +102,28 @@ test('SUV airport flats: JFK $112.50, LGA $123.75', () => { assert.equal(estimat
 test('SUV breakdown lines sum to total and show SUV rates', () => { const f = estimateFare({ meters: 12345, seconds: 1234, vclass: 'suv' }); assert.equal(Math.round(f.lines.reduce((a, l) => a + l[1], 0) * 100) / 100, f.total); assert.ok(f.lines.some(l => /\$3\.75/.test(l[0]))); assert.equal(ratesFor('suv').base, 5.25); });
 test('driver earnings 70/30 on SUV airport fare', () => { const s = splitF(112.5); assert.equal(s.driver, 78.75); assert.equal(s.company, 33.75); });
 test('unknown class falls back to Sedan pricing', () => assert.equal(estimateFare({ meters: 100, seconds: 30, vclass: 'limo' }).total, 10));
+
+import { addressVariants, AIRPORTS, LANDMARKS } from '../places.js';
+import { matchFlatRate as mfr } from '../fare.js';
+test('Queens hyphenated addresses: 5- and 4-digit, typed and untyped streets', () => {
+  assert.deepEqual(addressVariants('12345 101 Ave'), ['123-45 101st Avenue', '12345 101 Ave']);
+  assert.deepEqual(addressVariants('3412 31st st'), ['34-12 31st Street', '3412 31st st']);
+  const v = addressVariants('11025 71'); assert.ok(v.includes('110-25 71st Avenue') && v.includes('110-25 71st Street'));
+  assert.deepEqual(addressVariants('123-45 Queens Blvd'), ['123-45 Queens Blvd']);
+  assert.ok(addressVariants('30 Ave and Steinway, Astoria').some(x => x.endsWith('Astoria, Queens, NY')));
+});
+test('airport terminals keep flat pricing (JFK/LGA) and EWR is metered', () => {
+  for (const t of AIRPORTS.JFK.terminals) assert.equal(mfr(t[1]), 'jfk');
+  for (const t of AIRPORTS.LGA.terminals) assert.equal(mfr(t[1]), 'laguardia');
+  for (const t of AIRPORTS.EWR.terminals) assert.equal(mfr(t[1]), null);
+  assert.ok(LANDMARKS.length >= 20 && LANDMARKS.every(l => l.lat > 40.4 && l.lat < 41 && l.lng < -73 && l.lng > -74.3));
+});
+import { passengerHours } from '../hours.js';
+test('TLC passenger hours: 10 h/24 h with 8 h reset, 60 h/week', () => {
+  const now = new Date('2026-10-22T20:00:00').getTime(), H = 36e5;
+  const trips = Array.from({ length: 10 }, (_, i) => ({ startAt: now - (i + 1) * 1.05 * H, endAt: now - (i + 1) * 1.05 * H + H })); // 10 h of rides back to back
+  assert.ok(passengerHours(trips, now).blocked);
+  const rested = trips.map(t => ({ startAt: t.startAt - 9 * H - 11 * H, endAt: t.endAt - 9 * H - 11 * H }));
+  assert.ok(!passengerHours(rested, now).blocked);           // 9 h break since last ride → reset
+  assert.equal(Math.round(passengerHours([{ startAt: now - 2 * H, endAt: now - H }], now).dayH), 1);
+});
