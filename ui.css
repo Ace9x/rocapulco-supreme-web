@@ -124,8 +124,8 @@ body[data-app=driver] .price,body[data-app=dispatch] .price{color:#E6C25A}
 /* car cards */
 .car-card{min-height:72px;transition:border-color .2s,transform .15s,box-shadow .25s}.car-card:active{transform:scale(.985)}
 .car-card[aria-checked=true]{box-shadow:0 0 0 1px rgb(212 175 55/.3),0 8px 24px rgb(212 175 55/.14)}
-.car-art{width:72px;flex:none;display:block}.car-art svg{width:72px;height:36px;display:block;transition:transform .35s var(--ease)}
-.car-card[aria-checked=true] .car-art svg{transform:translateX(4px)}
+.car-art{width:72px;flex:none;display:block}.car-art img{width:72px;height:36px;display:block;transition:transform .35s var(--ease)}
+.car-card[aria-checked=true] .car-art img{transform:translateX(4px)}
 .car-card .vp{font-size:18px;font-weight:700;color:#D4AF37}
 .ds-badge{display:inline-flex;align-items:center;gap:4px;margin-top:4px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
 .ds-badge.flat{background:rgb(212 175 55/.16);color:#E6C25A;border:1px solid rgb(212 175 55/.45)}.ds-badge.up{background:var(--surface-3);color:var(--text-2)}
@@ -166,6 +166,41 @@ body[data-app=driver] .price,body[data-app=dispatch] .price{color:#E6C25A}
 .sp-line{width:0;height:1.5px;background:linear-gradient(90deg,transparent,#D4AF37,transparent);animation:grow .7s .7s forwards}@keyframes grow{to{width:180px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}#splash{display:none}}
 @media(min-width:800px){#sheet{max-height:none}}
-body[data-app=dispatch] .mk.car svg{filter:grayscale(1) brightness(1.25) contrast(1.05)}
+body[data-app=dispatch] .mk.car img{filter:grayscale(1) brightness(1.25) contrast(1.05)}
 .card.assign[draggable=true]{cursor:grab}.card.assign.dragging{opacity:.5}.drop{outline:2px dashed var(--steel);outline-offset:2px;background:rgb(156 163 175/.08)}
 .dfresh .row.dragok{cursor:grab}.dfresh .row.dragok::after{content:"⠿";color:var(--text-3);margin-left:6px}
+/* ===== v6: playbook fixes ===== */
+[data-theme=dark]{--text-2:#B4B7BD;--text-3:#A3A3A3}
+.fine{font-size:13px;color:#A3A3A3}
+.promise{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:15px;color:var(--text)}.promise>.ds-ic{color:#D4AF37;width:20px;height:20px;flex:none}.promise b{color:#D4AF37}.promise .btn{margin-left:auto;min-height:44px}
+#faresheet .row{display:flex;justify-content:space-between;gap:12px;font-size:14px;padding:6px 0}#faresheet .row span:last-child{text-align:right;color:var(--text-2)}
+.maplibregl-ctrl-top-right{top:64px!important}
+.btn.assignb{display:flex;flex:1 1 100%;justify-content:flex-start;gap:8px;min-height:44px;background:var(--surface-3);border:1px solid #4b5563;color:var(--text);font-size:14px}
+.btn.assignb b{margin-left:auto;color:#E5E7EB;font-variant-numeric:tabular-nums}.btn.assignb small{font-size:11px;color:#000;background:var(--steel);border-radius:999px;padding:1px 7px}
+.btn.assignb:hover{border-color:var(--steel)}
+.dfresh .row{min-height:44px;align-items:center}
+.dfresh .row.stale{color:#9CA3AF;background:repeating-linear-gradient(135deg,rgb(156 163 175/.06) 0 6px,transparent 6px 12px);opacity:.85}
+.stalet{font-weight:600;color:#9CA3AF}
+.mk.ride{width:auto!important}.mk.ride .rot{display:flex;align-items:center;gap:4px}.mk.ride b{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#E6C25A;color:#000;font-size:11px;box-shadow:0 0 0 3px rgb(230 194 90/.3)}
+.rp-f{font:700 11px var(--font);background:#0B0B0C;color:#E6C25A;border:1px solid #E6C25A;border-radius:999px;padding:1px 6px}
+/* ===== v6b: polish handoff ===== */
+h1 span,.sp-word,.brand h1,.where,h2{font-family:"Playfair Display",Georgia,serif;font-weight:600;letter-spacing:.005em}
+h1 span{font-style:italic}.lbl,h3{letter-spacing:.12em}
+#go-rider,#req{background-color:#E6C25A!important;background-image:linear-gradient(135deg,#F5D77A,#D4AF37 50%,#9C7A1E)!important;color:#0B0B0C!important;transition:transform .12s var(--ease)}
+#go-rider:active,#req:active{transform:scale(.97)}
+#go-rider::after,#req:not(:disabled)::after{animation:sheen2 4s 1s infinite}
+@keyframes sheen2{0%{transform:translateX(-100%)}30%,100%{transform:translateX(100%)}}
+/* one gold focal: secondary buttons neutral */
+.btn.gold,#acc,#start,#act,#fin,#ropt,#edok,#psend,#onbnext,.btn.link,.btn.call{color:#E5E7EB;border-color:#3f3f46}
+.btn.call .ds-ic,.ra .ds-ic,.hi a,.hi a .ds-ic{color:#A8ABB2}
+#sheet,.card{border-color:rgb(212 175 55/.25)}
+/* radar */
+.mk.radar{width:34px;height:34px;pointer-events:none}.mk.radar i,.radar-ui i{position:absolute;inset:0;border-radius:50%;border:2px solid #D4AF37;opacity:0;animation:radar 1.8s ease-out infinite}
+.mk.radar i:nth-child(2),.radar-ui i:nth-child(2){animation-delay:.6s}.mk.radar i:nth-child(3),.radar-ui i:nth-child(3){animation-delay:1.2s}
+.mk.radar b{position:absolute;inset:11px;border-radius:50%;background:#D4AF37;box-shadow:0 0 12px #D4AF37}
+@keyframes radar{0%{transform:scale(.4);opacity:.6}100%{transform:scale(2.2);opacity:0}}
+.radar-ui{position:relative;width:64px;height:64px;margin:24px auto}.radar-ui b{position:absolute;inset:14px;display:grid;place-items:center;border-radius:50%;background:#1b1b1e;color:#D4AF37}
+/* sheet drag handle area */
+@media(max-width:799px){#sheet::before{width:44px;height:5px;cursor:grab;touch-action:none}#sheet{touch-action:pan-y}}
+.tlc-blank{display:inline-block;width:72px;border-bottom:1px solid #A3A3A3;vertical-align:-2px}
+.legal a,.consent a,.fine a{color:#E6C25A}

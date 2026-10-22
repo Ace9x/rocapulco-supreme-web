@@ -13,7 +13,7 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   for (const p of [d, r]) p.on('pageerror', e => console.log('PAGEERROR', e.message));
   const h = await ctx.newPage(); await h.goto(url('#/'));
   await expect(h.locator('#hcall')).toHaveAttribute('href', 'tel:+17184747100'); await expect(h.locator('#sheet')).toContainText('No surge, ever');
-  await expect(h.locator('.rates')).toContainText('$3.50'); await expect(h.locator('.rates')).toContainText('$75'); await expect(h.locator('.rates')).toContainText('$82.50');
+  await expect(h.locator('#promise')).toContainText('$75'); await expect(h.locator('#promise')).toContainText('$82.50'); if (await h.locator('#onbskip').count()) await h.click('#onbskip'); await h.click('#fares'); await expect(h.locator('#faresheet')).toContainText('$3.50');
   await h.waitForTimeout(1500); await h.screenshot({ path: SHOTS + '00-home-black-gold.png' }); await h.close();
   await d.goto(url('#/driver'));
   await d.fill('input[name=name]', 'Test Driver'); await d.fill('input[name=phone]', '7185550100');
@@ -32,7 +32,7 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   await expect(r.locator('#fare')).toContainText('$', { timeout: 20000 });
   await r.click('#bd summary'); await expect(r.locator('#bd')).toContainText('Base fare'); await expect(r.locator('#bd')).toContainText('No booking, service or cancellation fees');
   await r.screenshot({ path: SHOTS + '01-rider-estimate-breakdown.png' });
-  await r.click('#req');
+  await r.check('#agree'); await r.click('#req');
   await r.screenshot({ path: SHOTS + '02-rider-searching.png' });
   await expect(d.locator('#acc')).toBeVisible({ timeout: 20000 });
   await expect(d.locator('#opm')).toContainText('/mi'); await expect(d.locator('.offer')).toContainText('Drop-off:'); await expect(d.locator('.offer')).toContainText('green awning'); await expect(d.locator('#otake')).toContainText('70%'); await expect(d.locator('#otake')).toContainText('Zelle');
@@ -76,7 +76,7 @@ test('demo mode: rider completes trip with a simulated driver', async ({ browser
   await r.fill('#de', 'Flushing Meadows Corona Park'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
   await expect(r.locator('#fare')).toContainText('$', { timeout: 20000 }); await r.waitForTimeout(3500);
   await r.screenshot({ path: SHOTS + '12-demo-drivers.png' });
-  await r.click('#req');
+  await r.check('#agree'); await r.click('#req');
   await expect(r.locator('.demo')).toBeVisible({ timeout: 20000 });
   await expect(r.locator('#done')).toBeVisible({ timeout: 200000 });
   await r.screenshot({ path: SHOTS + '13-demo-receipt.png' });
@@ -90,7 +90,7 @@ test('no-show: rider reports driver who never showed, $0 charge, dispatcher sees
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'Beach 116 Street Rockaway'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
   await expect(r.locator('#fare')).toContainText('$', { timeout: 20000 }); await r.waitForTimeout(3500);
-  await r.click('#req'); await expect(r.locator('.demo')).toBeVisible({ timeout: 30000 });
+  await r.check('#agree'); await r.click('#req'); await expect(r.locator('.demo')).toBeVisible({ timeout: 30000 });
   await r.click('#chatb'); await r.fill('#ci', 'where are you?'); await r.click('#cf button');
   await expect(r.locator('#msgs')).toContainText('demo driver', { timeout: 15000 });
   await expect(r.locator('#ns')).toBeVisible({ timeout: 30000 });
@@ -113,7 +113,7 @@ test('dispatch center: one-tap assign after a decline; popular destination; no c
   await expect(r.locator('#pop button')).toHaveCount(6);
   await r.click('#pop [data-p="2"]'); await expect(r.locator('#fare')).toContainText('$', { timeout: 20000 });
   await r.screenshot({ path: SHOTS + '17-rider-popular-destinations.png' });
-  await r.click('#req'); await expect(d.locator('#acc')).toBeVisible({ timeout: 20000 });
+  await r.check('#agree'); await r.click('#req'); await expect(d.locator('#acc')).toBeVisible({ timeout: 20000 });
   await d.click('#dec'); // auto-dispatch now has nobody left; a human dispatcher steps in
   await expect(a.locator('#open [data-a]').first()).toBeVisible({ timeout: 20000 });
   await expect(a.locator('#nw')).toHaveText('1');
@@ -139,7 +139,7 @@ test('scheduled ride: saved, alert when dispatch opens, demo driver confirms', a
   await r.click('#wsch');
   const at = await r.evaluate(() => { const d = new Date(Date.now() + 7 * 60e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   await r.fill('#when', at); await r.screenshot({ path: SHOTS + '18-rider-schedule.png' });
-  await r.click('#req'); await expect(r.locator('.sched')).toBeVisible();
+  await r.check('#agree'); await r.click('#req'); await expect(r.locator('.sched')).toBeVisible();
   await r.screenshot({ path: SHOTS + '19-rider-upcoming.png' });
   await expect(r.locator('.toast').filter({ hasText: 'finding your driver now' })).toBeVisible({ timeout: 20000 });
   await expect(r.locator('.toast').filter({ hasText: 'confirmed for your scheduled ride' })).toBeVisible({ timeout: 30000 });

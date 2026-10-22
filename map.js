@@ -11,14 +11,8 @@
   let uidN = 0;
 
   // Original top-down black luxury sedan (gold trim), drawn pointing north.
-  const CAR = (sim) => `<svg viewBox="0 0 40 64" width="30" height="48" aria-hidden="true"><defs><linearGradient id="cb" x1="0" x2="1"><stop offset="0" stop-color="#050505"/><stop offset=".5" stop-color="#2a2a2a"/><stop offset="1" stop-color="#050505"/></linearGradient></defs>
-<ellipse cx="20" cy="34" rx="17" ry="29" fill="#000" opacity=".35"/>
-<rect x="5" y="3" width="30" height="58" rx="11" fill="url(#cb)" stroke="${sim ? '#f59e0b' : GOLD}" stroke-width="1.6"/>
-<path d="M9 18 Q20 12 31 18 L29 27 Q20 24 11 27Z" fill="#6b7f99" opacity=".85"/><path d="M11 46 Q20 49 29 46 L30 53 Q20 57 10 53Z" fill="#4b5a6e" opacity=".85"/>
-<rect x="11" y="28" width="18" height="17" rx="3" fill="#111" stroke="${GOLD}" stroke-width=".6"/>
-<rect x="7" y="4" width="7" height="3" rx="1.5" fill="#fff8d6"/><rect x="26" y="4" width="7" height="3" rx="1.5" fill="#fff8d6"/>
-<rect x="7" y="57" width="7" height="2.5" rx="1" fill="#e11d48"/><rect x="26" y="57" width="7" height="2.5" rx="1" fill="#e11d48"/>
-<rect x="17" y="34" width="6" height="5" rx="1" fill="${GOLD}"/></svg>`;
+  const ART = new URL('art/', document.currentScript?.src || location.href).href;
+  const CAR = (sim) => `<img src="${ART}rocapulco-car-marker.svg" width="40" height="40" alt="" draggable="false"${sim ? ' style="opacity:.75"' : ''}>`;
 
   class Marker {
     constructor(latlng, o = {}) { this.ll = toLL(latlng); this.o = o; this.h = {}; this.head = 0; }
@@ -50,7 +44,8 @@
       m.ready(() => { if (!this._map) return; const gl = m.gl; gl.addSource(this.id, { type: 'geojson', data: this._data(), lineMetrics: true });
         gl.addLayer({ id: this.id + 'g', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': color, 'line-width': 16, 'line-blur': 10, 'line-opacity': .45 } });
         gl.addLayer({ id: this.id + 'c', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#000', 'line-width': 8 } });
-        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, '#fff4c2', 1, color] } });
+        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, color === GOLD ? '#F5D77A' : '#bfdbfe', 1, color] } });
+        if (color === GOLD && !matchMedia('(prefers-reduced-motion: reduce)').matches) { const t0 = performance.now(), id = this.id; const f = (t) => { const k = Math.min(1, (t - t0) / 800); if (!gl.getLayer(id)) return; gl.setPaintProperty(id, 'line-gradient', k < 1 ? ['step', ['line-progress'], ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37'], Math.max(.001, k), 'rgba(0,0,0,0)'] : ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37']); if (k < 1) requestAnimationFrame(f); }; requestAnimationFrame(f); }
         this.on = true; }); return this; }
     setLatLngs(l) { this.lls = l.map(toLL); if (this.on) this._map.gl.getSource(this.id)?.setData(this._data()); return this; }
     getBounds() { return this.lls; }
@@ -70,7 +65,7 @@
     constructor(id) {
       this.q = []; this.loaded = false; this.h = {};
       this.gl = new maplibregl.Map({ container: id, style: STYLE, center: [-73.7551, 40.6054], zoom: 13, attributionControl: false, pixelRatio: Math.max(2, devicePixelRatio || 1), maxPitch: 70, fadeDuration: 150 });
-      this.gl.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a> · <a href="https://openfreemap.org">OpenFreeMap</a>' }), 'top-left');
+      this.gl.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a> · <a href="https://openfreemap.org">OpenFreeMap</a>' }), 'top-right');
       this.gl.on('load', () => { this._theme(); this.loaded = true; this.q.splice(0).forEach(f => f()); document.getElementById(id).dataset.ready = '1'; document.querySelectorAll('.maplibregl-ctrl-attrib').forEach(e => e.classList.remove('maplibregl-compact-show')); });
       
       const wrap = (e) => ({ latlng: mkLL(e.lngLat), originalEvent: e.originalEvent });

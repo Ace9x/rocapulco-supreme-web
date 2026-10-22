@@ -1,4 +1,4 @@
-import { estimateFare, ratesFor, money, offerEconomics, split, DRIVER_SHARE, DISPATCH_PHONE, DISPATCH_TEL, PAYMENTS, POPULAR } from './fare.js';
+import { estimateFare, ratesFor, money, offerEconomics, split, DRIVER_SHARE, DISPATCH_PHONE, DISPATCH_TEL, PAYMENTS, TLC_BASE, POPULAR } from './fare.js';
 import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction, rankByRoad, homeFilterOk, cancelStatus, noShowAllowed, scheduleState, smooth } from './dispatch.js';
 import { createBus } from './data.js';
 import { ic } from './icons.js';
@@ -8,7 +8,9 @@ import * as learn from './learn.js';
 const APP = ['driver', 'dispatch'].includes(globalThis.ROC_APP) ? globalThis.ROC_APP : 'rider';
 document.body.dataset.app = APP;
 const Q = new URLSearchParams(location.search);
-const NS = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
+// Live channels: only the production 'nyc' channel on public relays; any other ?ns= is honored only for local (on-device) test mode.
+const NS0 = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
+const NS = Q.get('transport') === 'local' || NS0 === 'nyc' ? NS0 : 'nyc';
 const SPEED = Math.min(20, Math.max(1, +Q.get('speed') || 4)); // simulation speed multiplier
 const $ = (s) => document.querySelector(s);
 const sheet = $('#sheet');
@@ -22,7 +24,12 @@ const NOSHOW_GRACE = Q.get('testfast') ? 3 : 300;            // seconds after pr
 const NOSHOW_SCALE = Q.get('testfast') ? 0 : 1;
 const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
-const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: s => { $('#net').textContent = s === 'online' ? 'Live' : s === 'local' ? 'Local' : s; $('#net').className = 'net ' + s; } });
+let netT; const setNet = (s) => { const n = $('#net'); if (!n) return; clearTimeout(netT);
+  n.textContent = s === 'online' ? 'Live' : s === 'local' ? 'Local' : s === 'offline' ? 'Offline' : 'Reconnecting…'; n.className = 'net ' + (s === 'online' || s === 'local' ? s : 'reconnecting');
+  if (s !== 'online' && s !== 'local') netT = setTimeout(() => { n.innerHTML = 'Offline · <u>retry</u>'; n.onclick = () => location.reload(); n.title = 'Live updates paused. Call dispatch (718) 474-7100 if you need a ride now.'; }, 15000); };
+setTimeout(() => { if (/connecting/i.test($('#net')?.textContent || '')) setNet('reconnecting'); }, 6000);
+addEventListener('offline', () => setNet('offline'));
+const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: setNet });
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
@@ -34,14 +41,29 @@ const carIcon = (d) => icon('🚘', d && d.sim ? 'sim' : '');
 const pinA = icon('<b>A</b>', 'pin a'), pinB = icon('<b>B</b>', 'pin b'), meIcon = icon('', 'me');
 
 // ---------- routing / geocoding ----------
+// Routing: OSRM first, Valhalla (FOSSGIS) as fallback, results cached 1 h per ~11 m grid so repeats don't hit the demo servers.
+const RC = new Map(), rkey = (a, b) => [a.lat, a.lng, b.lat, b.lng].map(v => v.toFixed(4)).join(',');
+function decode6(str) { let i = 0, lat = 0, lng = 0; const out = []; while (i < str.length) { for (const k of [0, 1]) { let r = 0, sh = 0, c; do { c = str.charCodeAt(i++) - 63; r |= (c & 31) << sh; sh += 5; } while (c >= 32); const d = r & 1 ? ~(r >> 1) : r >> 1; if (k) lng += d; else lat += d; } out.push([lng / 1e6, lat / 1e6]); } return out; }
+async function valhalla(a, b) {
+  const q = { locations: [{ lat: a.lat, lon: a.lng }, { lat: b.lat, lon: b.lng }], costing: 'auto', units: 'kilometers' };
+  const j = await (await fetch('https://valhalla1.openstreetmap.de/route?json=' + encodeURIComponent(JSON.stringify(q)), { signal: AbortSignal.timeout(8000) })).json();
+  const leg = j.trip.legs[0], coords = decode6(leg.shape);
+  const steps = leg.maneuvers.map(m => ({ text: m.instruction, loc: { lat: coords[m.begin_shape_index][1], lng: coords[m.begin_shape_index][0] }, dist: m.length * 1000 }));
+  return pack(coords, j.trip.summary.length * 1000, j.trip.summary.time, steps, true);
+}
 async function route(a, b) {
+  const k = rkey(a, b), hit = RC.get(k); if (hit && Date.now() - hit.t < 3600e3) return hit.r;
+  const r = await route0(a, b); if (r.real) { RC.set(k, { t: Date.now(), r }); if (RC.size > 200) RC.delete(RC.keys().next().value); } return r;
+}
+async function route0(a, b) {
   try {
-    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson&steps=true`);
+    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson&steps=true`, { signal: AbortSignal.timeout(8000) });
     const j = await r.json(); if (j.code !== 'Ok') throw 0;
     const rt = j.routes[0], coords = rt.geometry.coordinates;
     const steps = rt.legs[0].steps.map(s => ({ text: instruction(s), loc: { lat: s.maneuver.location[1], lng: s.maneuver.location[0] }, dist: s.distance }));
     return pack(coords, rt.distance, rt.duration, steps, true);
   } catch {
+    try { return await valhalla(a, b); } catch {}
     const coords = [[a.lng, a.lat], [b.lng, b.lat]], d = haversine(a, b) * 1.3;
     return pack(coords, d, d / 7, [{ text: 'Head toward destination (approximate — routing unavailable)', loc: a }, { text: 'Arrive at destination', loc: b }], false);
   }
@@ -85,10 +107,11 @@ const speak = (t) => { if (store.get('voice', true) && 'speechSynthesis' in wind
 
 // ---------- shared UI helpers ----------
 // Smoothly glide a marker to a new position (no jumping cars).
-function animateTo(marker, to, ms = 900) {
-  const from = marker.getLatLng(), t0 = performance.now(); cancelAnimationFrame(marker._raf);
+function animateTo(marker, to, ms) {
+  const now0 = performance.now(); if (ms == null) ms = Math.min(2500, Math.max(400, marker._last ? now0 - marker._last : 900)); marker._last = now0;
+  const from = marker.getLatLng(), t0 = now0; cancelAnimationFrame(marker._raf);
   if (from.distanceTo(to) > 3000) return marker.setLatLng(to);
-  const stepf = (t) => { const k = Math.min(1, (t - t0) / ms), e = k * (2 - k); marker.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (k < 1) marker._raf = requestAnimationFrame(stepf); };
+  const stepf = (t) => { const k = Math.min(1, (t - t0) / ms), e = k; marker.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (k < 1) marker._raf = requestAnimationFrame(stepf); };
   marker._raf = requestAnimationFrame(stepf);
 }
 // Road travel time from each driver to the pickup via the OSRM table service (one request for all candidates).
@@ -165,12 +188,13 @@ const payLink = (m, amt) => m === 'venmo' ? `<a class="btn alt" target="_blank" 
 const initials = (n = '') => n.replace(/\(.*?\)/g, '').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'R';
 const RATE_TAGS = ['Clean car', 'Safe driving', 'On time', 'Friendly', 'Knew the route'];
 const VCLASS = { sedan: { name: 'Black Sedan', seats: 4, icon: 'car', test: () => true }, suv: { name: 'Black SUV', seats: 6, icon: 'suv', test: (d) => /escalade|suburban|xt6|tahoe|yukon|navigator|suv|van|sienna|odyssey/i.test(d.car || '') } };
-const carArt = (k) => `<svg viewBox="0 0 64 32" aria-hidden="true"><defs><linearGradient id="cb${k}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3a3e"/><stop offset="1" stop-color="#0b0b0c"/></linearGradient></defs>${k === 'suv'
-  ? '<path d="M5 23v-8l5-7h34l9 7 6 2v6z" fill="url(#cbsuv)" stroke="#D4AF37" stroke-width="1"/><path d="M13 10h12v6H10zM28 10h14l6 6H28z" fill="#1d2530" stroke="#5b4a1c" stroke-width=".6"/>'
-  : '<path d="M4 23v-5l8-2 8-7h20l10 7 9 2v5z" fill="url(#cbsedan)" stroke="#D4AF37" stroke-width="1"/><path d="M22 11h8v5H16zM33 11h6l6 5H33z" fill="#1d2530" stroke="#5b4a1c" stroke-width=".6"/>'}<path d="M4 20h56" stroke="#F5D77A" stroke-width=".7" opacity=".6"/><circle cx="16" cy="24" r="4.6" fill="#0b0b0c" stroke="#D4AF37" stroke-width="1.4"/><circle cx="48" cy="24" r="4.6" fill="#0b0b0c" stroke="#D4AF37" stroke-width="1.4"/><circle cx="16" cy="24" r="1.5" fill="#F5D77A"/><circle cx="48" cy="24" r="1.5" fill="#F5D77A"/><rect x="56" y="18" width="4" height="2" rx="1" fill="#F5D77A"/></svg>`;
+const ART = new URL('art/', import.meta.url).href;
+const carArt = (k) => `<img src="${ART}rocapulco-car-${k === 'suv' ? '3q' : 'side'}.svg" alt="" width="72" height="36" loading="lazy">`;
 const PAY_IC = { cash: 'cash', card: 'card', zelle: 'bank', venmo: 'phone' };
 const POLICY = 'No surge, ever. No booking or service fees. If a driver cancels, you are never charged.';
 const tabs = () => '';
+const TERMS_V = '2026-10-22';
+const tlcLine = () => `<span class="tlc">TLC Base # ${TLC_BASE ? esc(TLC_BASE) : '<span class="tlc-blank" aria-label="to be added"></span>'}</span>`;
 // Trust banner shown at every money moment (principle 12): exact locked price, paid once, to the driver.
 const trustBanner = (amt, pay) => `<div class="trust" id="trust" role="note">${ic('shield')}<div><b>Pay ${money(amt)} once — locked price</b><span>Paid ${esc(PAYMENTS[pay] || 'directly')} to your driver at drop-off. Never pay twice, never pay extra in cash.</span></div></div>`;
 // Tiny original route thumbnail (SVG polyline) for receipts.
@@ -206,10 +230,12 @@ function onboarding() {
 }
 function home() {
   sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>Rocapulco <span>Supreme</span></h1><p class="muted">Black-car luxury for Far Rockaway & all of NYC. Real human dispatch, upfront fares, <b>no surge, ever</b>.</p></div>
-  <div class="rates"><div><b>$3.50</b><span>base</span></div><div><b>$2.50</b><span>/mile</span></div><div><b>$0.40</b><span>/min</span></div><div><b>$75</b><span>JFK flat</span></div><div><b>$82.50</b><span>LGA flat</span></div></div><p class="fine">Black Sedan rates shown. Black SUV is 1.5×: $15 minimum, JFK $112.50, LGA $123.75.</p>
+  <p class="promise" id="promise">${ic('shield')}<span>JFK <b>$75</b> flat · LGA <b>$82.50</b> · No surge, ever</span><button class="btn link sm" id="fares" aria-expanded="false">Fares</button></p>
+  <div id="faresheet" hidden class="card"><div class="row"><span>Black Sedan</span><span>$3.50 + $2.50/mi + $0.40/min · $10 min</span></div><div class="row"><span>Black SUV</span><span>1.5× · $15 min · JFK $112.50 · LGA $123.75</span></div><div class="row"><span>Payment</span><span>Cash, card, Zelle or Venmo, to the driver</span></div><p class="fine">${POLICY}</p></div>
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
   ${callBtn()}
-  <p class="fine">$10 minimum ($15 SUV). Pay your driver directly: cash, card, Zelle or Venmo — the app never charges you. ${POLICY} Channel: <b>${esc(NS)}</b></p>`;
+  <p class="fine legal">Licensed NYC car service · ${tlcLine()} · <a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a></p>`;
+  $('#fares').onclick = () => { const f = $('#faresheet'); f.hidden = !f.hidden; $('#fares').setAttribute('aria-expanded', String(!f.hidden)); };
   onboarding();
 }
 
@@ -272,7 +298,9 @@ function rider() {
       <div class="paysel"><span class="lbl">${ic('wallet')}Pay driver with</span><div class="seg" id="pay">${Object.entries(PAYMENTS).map(([k, v]) => `<button data-m="${k}" class="${k === payM ? 'on' : ''}">${ic(PAY_IC[k])}${v}</button>`).join('')}</div></div>
       ${bh ? `<p class="fine learn" id="bh">${ic('spark')}${bh.busy ? 'Busy hour' : 'Typical hour'}: riders usually get a driver in about ${fmtMin(bh.avgWaitSec)} at this time (learned from ${bh.samples} past rides).</p>` : ''}
       <label class="tog"><input type="checkbox" id="demo" ${demo ? 'checked' : ''}> Demo mode — show simulated drivers (clearly labeled)</label>
-      <div id="est"></div><button class="btn gold big" id="req" disabled>Request ride</button>
+      <div id="est"></div>
+      <label class="tog consent"><input type="checkbox" id="agree" ${store.get('consent')?.v === TERMS_V ? 'checked' : ''}> I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms &amp; fare policy</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a></label>
+      <button class="btn gold big" id="req" disabled>Request ride</button>
       ${sched.length ? `<h3>Upcoming</h3>${sched.map(s => `<div class="card hist sched"><div><b>${esc(s.dest.label.split(',')[0])}</b><div class="muted">${new Date(s.pickupAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })} · driver search starts 30 min before</div></div><button class="btn link sm" data-x="${s.id}">Cancel</button></div>`).join('')}` : ''}`;
       sheet.querySelectorAll('#sc [data-sc]').forEach(b => b.onclick = () => { const k = b.dataset.sc;
         if (k === 'jfk' || k === 'lga') return setDest(POPULAR[k === 'jfk' ? 0 : 1], true);
@@ -293,10 +321,12 @@ function rider() {
       $('#wnow').onclick = () => { $('#wnow').classList.add('on'); $('#wsch').classList.remove('on'); $('#when').hidden = true; $('#req').textContent = 'Request ride'; };
       $('#wsch').onclick = () => { $('#wsch').classList.add('on'); $('#wnow').classList.remove('on'); const w = $('#when'); w.hidden = false; const d = new Date(Date.now() + 60 * 60e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); w.min = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16); w.value ||= d.toISOString().slice(0, 16); $('#req').textContent = 'Schedule ride'; };
       sheet.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== b.dataset.x)); plan(); });
-      $('#req').onclick = () => $('#when').hidden ? startRequest() : schedule();
+      $('#agree').onchange = (e) => { store.set('consent', e.target.checked ? { v: TERMS_V, at: new Date().toISOString() } : null); syncReq(); };
+      $('#req').onclick = () => { if (store.get('consent')?.v !== TERMS_V) { notify('Please agree to the Terms & Privacy policy first'); return; } $('#when').hidden ? startRequest() : schedule(); };
       if (pickup) { $('#pu').value = pickup.label || ''; } else locate();
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
     }
+    let ready = false; const syncReq = () => { if ($('#req')) $('#req').disabled = !(ready && store.get('consent')?.v === TERMS_V); };
     function classEta(k) {
       if (!pickup) return null;
       const c = [...drivers.values()].filter(d => d.status === 'available' && VCLASS[k].test(d)).map(d => haversine(d, pickup)).sort((a, b) => a - b)[0];
@@ -316,7 +346,9 @@ function rider() {
       sheet.innerHTML = `${tabs('rider')}<div class="hi"><a href="#" id="bk2" class="back">${ic('back')}Back</a></div><h2>Wallet</h2>
       <div class="card walletsum"><span class="fine">This month</span><div class="price">${money(spent)}</div><span class="muted">${month.length} ride${month.length === 1 ? '' : 's'} · paid directly to drivers</span></div>
       <div class="lbl">Default payment</div><div id="pm">${Object.entries(PAYMENTS).map(([k, v]) => `<button class="ds-option" role="radio" aria-checked="${k === payM}" data-m="${k}">${ic(PAY_IC[k], 'lg')}<div class="grow"><b>${v}</b><div class="muted">${PAY_NOTE[k]}</div></div>${k === payM ? ic('check') : ''}</button>`).join('')}</div>
-      <p class="fine">${ic('shield', 'sm')} Rocapulco never stores cards or charges you in the app. No booking, service or cancellation fees.</p>`;
+      <p class="fine">${ic('shield', 'sm')} Rocapulco never stores cards or charges you in the app. No booking, service or cancellation fees.</p>
+      <div class="lbl">Privacy</div><p class="fine"><a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a> · <a href="terms.html" target="_blank" rel="noopener">Terms</a></p><button class="btn alt danger" id="wipe">${ic('x')}Delete my data on this device</button>`;
+      $('#wipe').onclick = () => { if (!confirm('Delete your profile, trips, saved places and reports from this device? This cannot be undone.')) return; Object.keys(localStorage).filter(k => k.startsWith('qc_') || k.startsWith('roca-')).forEach(k => localStorage.removeItem(k)); notify('Your data was deleted from this device.'); location.hash = '#/'; location.reload(); };
       sheet.querySelectorAll('#pm [data-m]').forEach(b => b.onclick = () => { payM = b.dataset.m; store.set('pay', payM); wallet(); });
       $('#bk2').onclick = (e) => { e.preventDefault(); plan(); };
     }
@@ -352,26 +384,31 @@ function rider() {
       if (!$('#est')) return;
       const n = rankDrivers([...drivers.values()], pickup).length;
       $('#est').innerHTML = `<div class="card fare"><div><b>${VCLASS[vcls].name}</b><div class="muted">${fare.miles} mi · ${fmtMin(rt.duration)} ride${rt.real ? '' : ' (approx.)'} · ${n ? n + ' car' + (n > 1 ? 's' : '') + ' nearby' : 'no cars nearby yet'}</div></div><div class="price" id="fare">${money(fare.total)}</div></div>
-<p class="nosurge" id="surge">${ic('shield')} No surge, ever — same price at 3 AM, in the rain, on New Year's Eve.</p>
+<p class="fine policy" id="policy">Locked price · tolls extra, paid at cost · free cancel 3 min after match · driver cancels = $0. <a href="terms.html#fares" target="_blank" rel="noopener">Full policy</a></p><p class="nosurge" id="surge">${ic('shield')} No surge, ever — same price at 3 AM, in the rain, on New Year's Eve.</p>
       <details class="bd" id="bd"><summary>Fare breakdown — no hidden fees</summary>${fare.lines.map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total you pay</span><b>${money(fare.total)}</b></div><p class="fine">No booking, service or cancellation fees. Tolls (if any) and tip are your choice and paid to the driver. ${fare.flat ? 'Airport flat rate is fixed.' : 'This upfront price is locked when you book — traffic or detours never change it.'}</p></details>
       <p class="fine">You'll see your driver's real ETA once a driver accepts. <b>Pay driver directly (cash, card, Zelle or Venmo)</b> — the app never charges you. If a driver cancels, you pay nothing.</p>`;
-      $('#req').disabled = false; renderClasses();
+      ready = true; syncReq(); renderClasses();
     }
     // ---- dispatch: rank by road ETA (OSRM table), one offer at a time, 15 s each, auto-reassign ----
     async function startRequest(sched) {
       if (!fare || !rt) { rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: vcls }); }
       if (sched) { sched.started = true; store.set('scheduled', store.get('scheduled', []).filter(s => s.id !== sched.id)); }
-      trip = { vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [] };
+      trip = { vclass: vcls, pay: payM, id: 't-' + uid(), rider: { id: me.id, name: me.name, phone: me.phone }, pickup: { ...pickup, note: $('#note')?.value || pickup.note || '' }, dest, fare: fare.total, lines: fare.lines, surge: fare.surge, miles: fare.miles, minutes: fare.minutes, meters: rt.distance, ts: Date.now(), scheduledFor: sched?.pickupAt || null, excl: [], consent: store.get('consent', null) };
       sub('trip/' + trip.id, onTrip);
       bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
       import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; }).catch(e => console.warn('server booking (relay still live)', e.message));
       dispatch('Finding your driver…');
     }
-    const pub = (t) => ({ vclass: t.vclass, pay: t.pay, id: t.id, rider: t.rider, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
+    // Relay messages are public: send only first name + last 4 of the phone (full details stay on the protected server booking).
+    const pub = (t) => ({ consent: t.consent, vclass: t.vclass, pay: t.pay, id: t.id, rider: { id: t.rider.id, name: String(t.rider.name || '').trim().split(/\s+/)[0], phone4: String(t.rider.phone || '').replace(/\D/g, '').slice(-4) }, pickup: t.pickup, dest: t.dest, fare: t.fare, lines: t.lines, surge: t.surge, miles: t.miles, minutes: t.minutes, meters: t.meters, ts: t.ts, scheduledFor: t.scheduledFor });
     async function dispatch(title) {
       dmk.forEach(m => m.remove()); carMk?.remove(); carMk = null; clearInterval(tick);
-      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="spinner"></div><p class="muted" id="ds">Contacting the closest driver by road time</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
-      $('#cx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; plan(); };
+      const radar = L.marker([pickup.lat, pickup.lng], { icon: icon('<i></i><i></i><i></i><b></b>', 'radar'), zIndexOffset: 950 }).addTo(layer); map.setView(pickup, 15);
+      const msgs = ['Contacting nearby chauffeurs…', 'Checking road time to your door…', 'Matching the closest black car…']; let mi = 0;
+      const rot = setInterval(() => { if (!$('#ds') || trip?.state !== 'requested') return; $('#ds').textContent = msgs[++mi % msgs.length]; }, 3000);
+      const stopRadar = () => { clearInterval(rot); radar.remove(); }; cleanup.push(stopRadar);
+      sheet.innerHTML = `<h2>${esc(title)}</h2><div class="radar-ui" aria-hidden="true"><i></i><i></i><i></i><b>${ic('car')}</b></div><p class="muted" id="ds">Contacting nearby chauffeurs…</p><p class="fine">No ETA is shown until a real driver accepts.</p>${callBtn(`Or call dispatch ${DISPATCH_PHONE}`)}<button class="btn alt" id="cx">Cancel (free)</button>`;
+      $('#cx').onclick = () => { stopRadar(); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider' }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; plan(); };
       trip.state = 'requested'; trip.driver = null; const t0 = Date.now(), me_t = trip;
       while (trip === me_t && (trip.state === 'requested' || trip.state === 'offered')) {
         if (trip.state === 'offered') { // dispatcher one-tap assign took over this offer
@@ -394,6 +431,7 @@ function rider() {
       if (m.type === 'assign' && (trip.state === 'requested' || (trip.state === 'offered' && m.driver !== trip.offerTo))) { trip.state = 'offered'; trip.offerTo = m.driver; trip.offerAt = Date.now(); if ($('#ds')) $('#ds').textContent = `Dispatch assigned ${m.name || 'a driver'} — waiting for them to accept…`; }
       if (m.type === 'decline' && trip.state === 'offered' && m.driver === trip.offerTo) { trip.excl.push(m.driver); trip.state = 'requested'; }
       if (m.type === 'accept' && trip.state === 'offered' && m.driver.id === trip.offerTo) {
+        layer.eachLayer?.(l => { if (l.o?.icon?.className?.includes('radar')) l.remove(); });
         trip.state = 'accepted'; trip.driver = m.driver; trip.matchedAt = Date.now(); trip.lastLoc = Date.now(); trip.promised = null; trip.eta = null;
         carMk = L.marker([m.driver.lat, m.driver.lng], { icon: carIcon(m.driver), zIndexOffset: 1000 }).addTo(layer);
         if (trip.scheduledFor) notify(`${m.driver.name} confirmed for your scheduled ride.`);
@@ -471,7 +509,7 @@ function rider() {
       return `<div class="card rcpt" id="rcpt"><div class="rc-top">${routeThumb(rec.thumb)}<div class="grow"><div class="fine">Booking #${esc(rec.id)}</div><div class="rc-tot" id="rfare">${money(rec.fare)}</div><div class="muted">${esc(VCLASS[rec.vclass || 'sedan'].name)} · ${rec.miles ?? '–'} mi${rec.minutes ? ' · ' + rec.minutes + ' min' : ''}</div></div></div>
       <div class="rc-drv"><div class="ds-avatar">${esc(initials(rec.driver))}</div><div class="grow"><b>${esc(rec.driver)}</b><div class="muted">${esc(rec.car || '')}</div></div><span class="plate">${esc(rec.plate || '')}</span></div>
       <div class="rc-lines">${(rec.lines || []).map(l => `<div class="row"><span>${esc(l[0])}</span><span>${money(l[1])}</span></div>`).join('')}<div class="row tot"><span>Total · locked at booking</span><b>${money(rec.fare)}</b></div><div class="row"><span>Paid with</span><b id="rpay">${PAYMENTS[rec.pay] || '—'}</b></div></div>
-      <div class="rc-route"><div class="row"><span>From</span><span class="ell">${esc(rec.from || '')}</span></div><div class="row"><span>To</span><span class="ell">${esc(rec.to || '')}</span></div><div class="row"><span>When</span><span>${new Date(rec.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span></div></div></div>`;
+      <div class="rc-route"><div class="row"><span>From</span><span class="ell">${esc(rec.from || '')}</span></div><div class="row"><span>To</span><span class="ell">${esc(rec.to || '')}</span></div><div class="row"><span>Car service</span><span>Rocapulco Supreme · ${tlcLine()}</span></div><div class="row"><span>When</span><span>${new Date(rec.date).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span></div></div></div>`;
     }
     function problemForm(box, rec) {
       if (box.innerHTML) { box.innerHTML = ''; return; }
@@ -631,12 +669,12 @@ function admin() {
   <div id="open" class="queue"></div>
   <div class="lbl">${ic('car')}Drivers · location freshness</div><div id="dfresh" class="dfresh"></div>
   <div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
-  <div class="grid"><div class="card stat"><span>Fares today</span><b id="nf">$0.00</b></div><div class="card stat"><span>Rocapulco 30%</span><b id="nc">$0.00</b></div></div>
-  <p class="nosurge">${ic('shield')} No surge, ever. Pricing is fixed: Sedan $3.50 + $2.50/mi + $0.40/min, $10 min · JFK $75 · LGA $82.50 · Black SUV 1.5× ($15 min, JFK $112.50, LGA $123.75).</p>
-  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Live view of channel “${esc(NS)}”. Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
   import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
-  let earned = 0;
+  let earned = 0; const rmk = new Map();
+  const ridePin = (t) => icon(`<b>${esc(initials(t.rider))}</b><span class="rp-f">${money(t.fare || 0).replace('.00', '')}</span>`, 'pin a ride');
+  cleanup.push(() => rmk.forEach(m => m.remove()));
   function assignTo(tid, did) {
     const t = trips.get(tid), d = drivers.get(did); if (!t || !d) return;
     bus.publish('trip/' + tid, { type: 'assign', driver: d.id, name: d.name });
@@ -649,13 +687,15 @@ function admin() {
     mk.forEach((m, id) => { const d = drivers.get(id); if (!d || !m.el) return; const age = now - d.ts, stale = age > 60000;
       m.el.classList.toggle('stale', stale); let tag = m.el.querySelector('.fresh'); if (!tag) { tag = document.createElement('span'); tag.className = 'fresh'; m.el.appendChild(tag); }
       tag.textContent = (stale ? '! ' : '') + ago(age); m.setTooltipContent(`${d.name} · ${d.status} · updated ${ago(age)}`); });
-    if ($('#dfresh')) $('#dfresh').innerHTML = on.length ? [...on].sort((a, b) => b.ts - a.ts).map(d => { const age = now - d.ts; return `<div class="row ${age > 60000 ? 'stale' : ''}" data-fd="${esc(d.id)}"><span>${age > 60000 ? ic('alert', 'sm') : '<i class="live"></i>'}${esc(d.name)} · ${esc(d.status)}</span><span class="muted">updated ${ago(age)}</span></div>`; }).join('') : '<p class="muted">No drivers online.</p>';
+    if ($('#dfresh')) $('#dfresh').innerHTML = on.length ? [...on].sort((a, b) => b.ts - a.ts).map(d => { const age = now - d.ts; return `<div class="row ${age > 60000 ? 'stale' : ''}" data-fd="${esc(d.id)}"><span>${age > 60000 ? ic('alert', 'sm') : '<i class="live"></i>'}${esc(d.name)} · ${age > 60000 ? '<b class="stalet">Stale — not assignable</b>' : esc(d.status)}</span><span class="muted">updated ${ago(age)}</span></div>`; }).join('') : '<p class="muted">No drivers online.</p>';
     $('#nd') && ($('#nd').textContent = on.length);
     mk.forEach((m, id) => { if (!on.find(d => d.id === id)) { m.remove(); mk.delete(id); } });
     const list = [...trips.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
     const open = list.filter(t => ['requested', 'offered', 'reassigning', 'scheduled, dispatching'].includes(t.state));
     const qNew = open.filter(t => !t.assigned), qAs = list.filter(t => t.assigned && open.includes(t) || t.state === 'driver en route' || t.state === 'driver arrived'), qOn = list.filter(t => t.state === 'in trip');
     $('#qn') && ($('#qn').textContent = qNew.length); $('#qa') && ($('#qa').textContent = qAs.length); $('#qo') && ($('#qo').textContent = qOn.length);
+    rmk.forEach((m, id) => { if (!open.find(t => t.id === id)) { m.remove(); rmk.delete(id); } });
+    open.forEach(t => { if (t.pickup?.lat != null && !rmk.has(t.id)) rmk.set(t.id, L.marker([t.pickup.lat, t.pickup.lng], { icon: ridePin(t), zIndexOffset: 800 }).bindTooltip(`${t.rider} → ${t.to} · waiting`).addTo(layer)); });
     const shown = { new: qNew, assigned: qAs, ontrip: qOn }[qtab];
     const etaOf = (d, p) => (haversine(d, p) * 1.4) / 8 + 60;
     $('#nt') && ($('#nt').textContent = list.filter(t => !['completed', 'cancelled', 'cancelled — driver no-show'].includes(t.state)).length);
@@ -665,7 +705,7 @@ function admin() {
     if ($('#open')) {
       $('#open').innerHTML = shown.length ? shown.map(t => { const canAssign = qtab !== 'ontrip' && open.includes(t);
         return `<div class="card assign" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}<div class="muted">${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
-        ${canAssign ? `<div class="drvs">${av.length ? av.map(d => ({ d, e: etaOf(d, t.pickup) })).sort((a, b) => a.e - b.e).slice(0, 3).map(({ d, e }, k) => `<button class="btn sm ${k ? 'alt' : 'steel'}" data-a="${esc(d.id)}">${k ? '' : ic('check', 'sm')}Assign ${esc(d.name)} · ${fmtMin(e)}</button>`).join('') : '<span class="muted">' + ic('alert', 'sm') + ' No available drivers online</span>'}</div>` : ''}</div>`; }).join('') : `<p class="muted">${{ new: 'No riders waiting.', assigned: 'Nothing assigned right now.', ontrip: 'No rides in progress.' }[qtab]}</p>`;
+        ${canAssign ? `<div class="drvs">${av.length ? av.map(d => ({ d, e: etaOf(d, t.pickup) })).sort((a, b) => a.e - b.e).slice(0, 3).map(({ d, e }, k) => `<button class="btn assignb" data-a="${esc(d.id)}"><span class="ell">Assign ${esc(d.name)}</span><b>${fmtMin(e)}</b>${k ? '' : '<small>nearest</small>'}</button>`).join('') : '<span class="muted">' + ic('alert', 'sm') + ' No available drivers online</span>'}</div>` : ''}</div>`; }).join('') : `<p class="muted">${{ new: 'No riders waiting.', assigned: 'Nothing assigned right now.', ontrip: 'No rides in progress.' }[qtab]}</p>`;
       $('#open').querySelectorAll('[data-a]').forEach(b => b.onclick = () => assignTo(b.closest('[data-t]').dataset.t, b.dataset.a));
       // drag-to-assign: drag a waiting ride onto a driver row, or a driver row onto a ride
       $('#open').querySelectorAll('.card.assign').forEach(c => { const tid = c.dataset.t; if (!open.includes(trips.get(tid))) return;
@@ -698,6 +738,15 @@ async function router() { reset(); let r = location.hash.replace('#/', '');
   else { r = APP === 'driver' ? 'driver' : 'admin';
     if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] }); reset(); } }
   document.body.dataset.view = r || 'home'; ({ rider, driver, admin }[r] || home)(); setTimeout(() => map.invalidateSize(), 50); }
+// Draggable bottom sheet on phones: peek 120px / half / full, spring-ish release.
+(function sheetDrag() {
+  const snaps = () => [120, innerHeight * .5, innerHeight * .88]; let y0 = null, h0 = 0, moved = false;
+  sheet.addEventListener('pointerdown', (e) => { if (innerWidth >= 800 || e.clientY - sheet.getBoundingClientRect().top > 28) return; y0 = e.clientY; h0 = sheet.getBoundingClientRect().height; moved = false; sheet.setPointerCapture(e.pointerId); sheet.style.transition = 'none'; });
+  sheet.addEventListener('pointermove', (e) => { if (y0 == null) return; const h = Math.max(100, Math.min(innerHeight * .92, h0 + (y0 - e.clientY))); if (Math.abs(y0 - e.clientY) > 4) moved = true; sheet.style.maxHeight = sheet.style.height = h + 'px'; });
+  sheet.addEventListener('pointerup', () => { if (y0 == null) return; y0 = null; const h = sheet.getBoundingClientRect().height, s = snaps().reduce((a, b) => Math.abs(b - h) < Math.abs(a - h) ? b : a);
+    sheet.style.transition = 'height .4s cubic-bezier(.32,.72,0,1),max-height .4s cubic-bezier(.32,.72,0,1)'; sheet.style.maxHeight = sheet.style.height = s + 'px'; sheet.dataset.snap = s === 120 ? 'peek' : s > innerHeight * .7 ? 'full' : 'half'; if (!moved) { sheet.style.height = ''; sheet.style.maxHeight = ''; delete sheet.dataset.snap; } });
+  addEventListener('hashchange', () => { sheet.style.height = ''; sheet.style.maxHeight = ''; delete sheet.dataset.snap; });
+})();
 addEventListener('hashchange', router); splash(); router();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(new URL('sw.js', import.meta.url).href);
 window.__qc = { bus, NS };
