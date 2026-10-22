@@ -90,3 +90,10 @@ input,select{font-family:var(--font);background:var(--surface-2);border:1px soli
 .onb-skip{position:absolute;top:var(--s-4);right:var(--s-4);background:none;border:0;color:var(--text-2);font:600 var(--fs-sm) var(--font);cursor:pointer}
 .dots{display:flex;gap:6px;justify-content:center;margin:var(--s-5) 0}.dots i{width:8px;height:8px;border-radius:4px;background:var(--surface-3);transition:width var(--dur)}.dots i.on{width:22px;background:var(--gold)}
 html,body{overflow:hidden;overscroll-behavior:none}
+/* accounts */
+.acct-opts{display:flex;flex-direction:column;gap:10px;margin:8px 0}.btn.oauth{display:flex;align-items:center;justify-content:center;gap:10px;min-height:48px;font-weight:600}
+.btn.oauth.google{background:#fff;color:#1f1f1f;border:1px solid #dadce0}.btn.oauth.apple{background:#000;color:#fff;border:1px solid #444}.btn.oauth[hidden]{display:none}
+.or{display:flex;align-items:center;gap:10px;margin:14px 0;color:var(--muted,#999);font-size:13px}.or:before,.or:after{content:"";flex:1;height:1px;background:#ffffff22}
+.emailacct summary{cursor:pointer;padding:8px 0;color:var(--gold,#D4AF37)}.card.acct{display:flex;justify-content:space-between;align-items:center}
+.invbox{display:flex;flex-direction:column;gap:8px;margin-top:10px;align-items:flex-start}.invbox .code{font:700 18px ui-monospace,monospace;letter-spacing:1px;color:var(--gold,#D4AF37)}.invbox input{width:100%}
+#noaccess .btn{margin-top:8px}

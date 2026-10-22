@@ -1,13 +1,13 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '@playwright/test'; import { newCtx, appUrl } from './staff-session.mjs';
 const BASE = process.env.BASE || 'http://localhost:8099/', OUT = '/workspace/taxi-shots/v4/';
 test.setTimeout(300000);
 for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { width: 1440, height: 900 }, false]]) {
   test(`v4 screens ${tag} ${vp.width}x${vp.height}, no console errors`, async ({ browser }) => {
-    const ctx = await browser.newContext({ viewport: vp, isMobile: mob, hasTouch: mob, deviceScaleFactor: mob ? 2 : 1, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
+    const ctx = await newCtx(browser, { viewport: vp, isMobile: mob, hasTouch: mob, deviceScaleFactor: mob ? 2 : 1, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
     const p = await ctx.newPage(), errs = [];
     p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|tile|ERR_/i.test(m.text())) errs.push(m.text()); });
     p.on('pageerror', e => errs.push(e.message));
-    const u = (h) => `${BASE}?transport=local&ns=v4${tag}${Date.now()}&speed=20${h}`;
+    const NSV = `?transport=local&ns=v4${tag}${Date.now()}&speed=20`, u = (h) => appUrl(BASE, NSV, h);
     await p.goto(u('#/')); await expect(p.locator('#onb')).toBeVisible();
     await p.waitForTimeout(1500); await p.screenshot({ path: OUT + `${tag}-01-onboarding.png` });
     await p.click('#onbnext'); await p.click('#onbnext'); await p.click('#onbnext'); await expect(p.locator('#onb')).toHaveCount(0);

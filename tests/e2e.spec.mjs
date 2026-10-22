@@ -1,14 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '@playwright/test'; import { newCtx, appUrl } from './staff-session.mjs';
 const BASE = process.env.BASE || 'http://localhost:8099/';
 const T = process.env.TRANSPORT || 'local';
 const ns = 'e2e' + Date.now();
-const url = (h, extra = '') => `${BASE}?transport=${T}&ns=${ns}&speed=20${extra}${h}`;
+const url = (h, extra = '') => appUrl(BASE, `?transport=${T}&ns=${ns}&speed=20${extra}`, h);
 const SHOTS = process.env.SHOTS || '/workspace/taxi-shots/v2/';
 test.setTimeout(240000);
 test('rider + real driver complete a full trip with simulated GPS', async ({ browser }) => {
   const opt = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, geolocation: { latitude: 40.7466, longitude: -73.8913 }, permissions: ['geolocation'] };
-  const ctx = await browser.newContext(opt); // same context => BroadcastChannel works in local mode
-  const dctx = T !== 'local' ? await browser.newContext(opt) : ctx; // separate browsers over the live broker
+  const ctx = await newCtx(browser, opt); // same context => BroadcastChannel works in local mode
+  const dctx = T !== 'local' ? await newCtx(browser, opt) : ctx; // separate browsers over the live broker
   const d = await dctx.newPage(), r = await ctx.newPage();
   for (const p of [d, r]) p.on('pageerror', e => console.log('PAGEERROR', e.message));
   const h = await ctx.newPage(); await h.goto(url('#/'));
@@ -69,7 +69,7 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   await a.screenshot({ path: SHOTS + '11-dispatcher.png' });
 });
 test('demo mode: rider completes trip with a simulated driver', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.7128, longitude: -73.8314 }, permissions: ['geolocation'] });
+  const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.7128, longitude: -73.8314 }, permissions: ['geolocation'] });
   const r = await ctx.newPage(); await r.goto(url('#/rider'));
   await r.fill('input[name=name]', 'Demo Rider'); await r.fill('input[name=phone]', '1'); await r.click('text=Continue');
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
@@ -83,9 +83,9 @@ test('demo mode: rider completes trip with a simulated driver', async ({ browser
 });
 
 test('no-show: rider reports driver who never showed, $0 charge, dispatcher sees it', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
+  const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
   const a = await ctx.newPage(); const r = await ctx.newPage();
-  await a.goto(url('#/admin')); await r.goto(`${BASE}?transport=${T}&ns=${ns}&speed=1&testfast=1#/rider`);
+  await a.goto(url('#/admin')); await r.goto(appUrl(BASE, `?transport=${T}&ns=${ns}&speed=1&testfast=1`, '#/rider'));
   await r.fill('input[name=name]', 'NoShow Rider'); await r.fill('input[name=phone]', '1'); await r.click('text=Continue');
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'Beach 116 Street Rockaway'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
@@ -102,7 +102,7 @@ test('no-show: rider reports driver who never showed, $0 charge, dispatcher sees
 });
 test('dispatch center: one-tap assign after a decline; popular destination; no charge when driver cancels', async ({ browser }) => {
   const opt = { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] };
-  const ctx = await browser.newContext(opt), dctx = T !== 'local' ? await browser.newContext(opt) : ctx;
+  const ctx = await newCtx(browser, opt), dctx = T !== 'local' ? await newCtx(browser, opt) : ctx;
   const d = await dctx.newPage(), r = await ctx.newPage(), a = await ctx.newPage();
   await d.goto(url('#/driver')); await d.fill('input[name=name]', 'Assign Driver'); await d.fill('input[name=phone]', '7185550111');
   await d.fill('input[name=car]', 'Black Cadillac XTS'); await d.fill('input[name=plate]', 'T777777C'); await d.click('text=Continue');
@@ -130,7 +130,7 @@ test('dispatch center: one-tap assign after a decline; popular destination; no c
   await r.click('#cx');
 });
 test('scheduled ride: saved, alert when dispatch opens, demo driver confirms', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
+  const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
   const r = await ctx.newPage(); await r.goto(url('#/rider', '&leadmin=8'));
   await r.fill('input[name=name]', 'Sched Rider'); await r.fill('input[name=phone]', '1'); await r.click('text=Continue');
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });

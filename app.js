@@ -4,6 +4,8 @@ import { createBus } from './data.js';
 import { ic } from './icons.js';
 import * as learn from './learn.js';
 
+// Three separate apps share this code: riders (main URL), /driver/ and /dispatch/ (set window.ROC_APP before loading).
+const APP = ['driver', 'dispatch'].includes(globalThis.ROC_APP) ? globalThis.ROC_APP : 'rider';
 const Q = new URLSearchParams(location.search);
 const NS = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
 const SPEED = Math.min(20, Math.max(1, +Q.get('speed') || 4)); // simulation speed multiplier
@@ -99,7 +101,7 @@ async function roadTimes(cands, pickup) {
 }
 function notify(text) {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.appendChild(t); setTimeout(() => t.remove(), 6000);
-  try { if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Rocapulco Supreme', { body: text, icon: 'icons/icon-192.png' }); } catch {}
+  try { if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Rocapulco Supreme', { body: text, icon: new URL('icons/icon-192.png', import.meta.url).href }); } catch {}
 }
 // In-trip chat between rider and driver over the trip channel.
 function chatBox(box, btn, tripId, role) {
@@ -164,7 +166,7 @@ const RATE_TAGS = ['Clean car', 'Safe driving', 'On time', 'Friendly', 'Knew the
 const VCLASS = { sedan: { name: 'Black Sedan', seats: 4, icon: 'car', test: () => true }, suv: { name: 'Black SUV', seats: 6, icon: 'suv', test: (d) => /escalade|suburban|xt6|tahoe|yukon|navigator|suv|van|sienna|odyssey/i.test(d.car || '') } };
 const PAY_IC = { cash: 'cash', card: 'card', zelle: 'bank', venmo: 'phone' };
 const POLICY = 'No surge, ever. No booking or service fees. If a driver cancels, you are never charged.';
-const tabs = (cur) => `<nav class="tabs">${['rider', 'driver', 'admin'].map(t => `<a href="#/${t}" class="${t === cur ? 'on' : ''}">${ic({ rider: 'car', driver: 'route', admin: 'dispatch' }[t])}${{ rider: 'Ride', driver: 'Drive', admin: 'Dispatch' }[t]}</a>`).join('')}</nav>`;
+const tabs = () => ''; // each app has a single section; riders never see driver or dispatch links
 
 const ONB = [
   ['shield', 'Upfront fares, no surge — ever', '$3.50 + $2.50/mi + $0.40/min, $10 minimum. JFK $75, LGA $82.50 flat (Black SUV 1.5×). Same price at 3 AM or in the rain.'],
@@ -184,7 +186,6 @@ function home() {
   sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>Rocapulco <span>Supreme</span></h1><p class="muted">Black-car luxury for Far Rockaway & all of NYC. Real human dispatch, upfront fares, <b>no surge, ever</b>.</p></div>
   <div class="rates"><div><b>$3.50</b><span>base</span></div><div><b>$2.50</b><span>/mile</span></div><div><b>$0.40</b><span>/min</span></div><div><b>$75</b><span>JFK flat</span></div><div><b>$82.50</b><span>LGA flat</span></div></div><p class="fine">Black Sedan rates shown. Black SUV is 1.5×: $15 minimum, JFK $112.50, LGA $123.75.</p>
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
-  <div class="two eq"><a class="btn alt" href="#/driver" id="go-driver">${ic('route')}Drive</a><a class="btn alt" href="#/admin">${ic('dispatch')}Dispatch</a></div>
   ${callBtn()}
   <p class="fine">$10 minimum ($15 SUV). Pay your driver directly: cash, card, Zelle or Venmo — the app never charges you. ${POLICY} Channel: <b>${esc(NS)}</b></p>`;
   onboarding();
@@ -193,10 +194,11 @@ function home() {
 function profileForm(role, done) {
   const p = store.get('profile_' + role);
   if (p) return done(p);
-  sheet.innerHTML = `${tabs(role)}<h2>${role === 'rider' ? 'Create rider account' : 'Driver sign-up'}</h2>
+  sheet.innerHTML = `${tabs(role)}<h2>${role === 'rider' ? 'Your rider account' : 'Driver profile'}</h2>${role === 'rider' ? '<div id="racct"></div><div class="or"><span>or book as a guest with just your phone</span></div>' : ''}
   <form id="pf"><input required name="name" placeholder="Full name" autocomplete="name"><input required name="phone" type="tel" placeholder="Phone" autocomplete="tel">
   ${role === 'driver' ? '<input required name="car" placeholder="Vehicle (e.g. Toyota Camry, yellow)"><input required name="plate" placeholder="Plate / TLC medallion #">' : ''}
-  <button class="btn">Continue</button></form><p class="fine">Your profile is saved on this device only.</p>`;
+  <button class="btn">Continue</button></form><p class="fine">${role === 'rider' ? 'Guest details stay on this device.' : 'Vehicle details are saved on this device.'}</p>`;
+  if (role === 'rider') import('./cloud.js').then(c => c.mountRiderAccount($('#racct'), m => { if (m && $('#pf')) { const n = $('#pf').elements.name; if (n && !n.value) n.value = m.name || ''; } })).catch(() => $('#racct')?.remove());
   $('#pf').onsubmit = (e) => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); d.id = (role === 'driver' ? 'drv-' : 'rdr-') + uid(); store.set('profile_' + role, d); done(d); };
 }
 
@@ -594,7 +596,12 @@ function admin() {
   every(draw, 5000);
 }
 
-function router() { reset(); const r = location.hash.replace('#/', ''); document.body.dataset.view = r || 'home'; ({ rider, driver, admin }[r] || home)(); setTimeout(() => map.invalidateSize(), 50); }
+let staff = null; // set by the staff gate in the driver / dispatch apps
+async function router() { reset(); let r = location.hash.replace('#/', '');
+  if (APP === 'rider') { if (r === 'driver' || r === 'admin') { location.replace(new URL(r === 'driver' ? 'driver/' : 'dispatch/', import.meta.url).href); return; } if (r && r !== 'rider') r = ''; }
+  else { r = APP === 'driver' ? 'driver' : 'admin';
+    if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] }); reset(); } }
+  document.body.dataset.view = r || 'home'; ({ rider, driver, admin }[r] || home)(); setTimeout(() => map.invalidateSize(), 50); }
 addEventListener('hashchange', router); router();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(new URL('sw.js', import.meta.url).href);
 window.__qc = { bus, NS };

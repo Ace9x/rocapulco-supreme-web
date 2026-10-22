@@ -2,7 +2,7 @@
 // BASE=url RR_TEST_USERS=/path node tests/supabase-e2e.mjs
 import { chromium } from 'playwright'; import { createClient } from '@supabase/supabase-js'; import WebSocket from 'ws'; import fs from 'node:fs';
 const SRC = fs.readFileSync(new URL('../cloud.js', import.meta.url), 'utf8'), U = SRC.match(/url: '([^']+)'/)[1], K = SRC.match(/anonKey: '([^']+)'/)[1];
-const users = JSON.parse(fs.readFileSync(process.env.RR_TEST_USERS || '/workspace/.rr-secrets/testusers.json')), BASE = process.env.BASE || 'http://localhost:8767/';
+const users = JSON.parse(fs.readFileSync(process.env.ROC_TEST_USERS || '/workspace/.rr-secrets/taxi_test_users.json')), BASE = process.env.BASE || 'http://localhost:8767/';
 let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
 const G = createClient(U, K, { realtime: { transport: WebSocket }, auth: { persistSession: false } });
 const PH = '+1555' + String(Math.floor(Math.random() * 1e7)).padStart(7, '0');
@@ -18,13 +18,13 @@ const st = (await G.rpc('ride_status', { p_id: a.data[0].id, p_token: a.data[0].
 ok((await G.rpc('rider_cancel', { p_id: l.data[0].id, p_token: crypto.randomUUID() })).data == null, 'wrong token cannot cancel');
 ok((await G.rpc('rider_cancel', { p_id: l.data[0].id, p_token: l.data[0].token })).data === 'cancelled_rider', 'rider cancel with token');
 const b = await chromium.launch(), p = await b.newPage(); p.on('pageerror', e => console.log('PAGE ERROR', e.message)); p.on('dialog', d => d.accept());
-await p.goto(BASE + '#/admin'); await p.waitForSelector('#sbf', { timeout: 30000 });
+await p.goto(BASE + 'dispatch/'); await p.waitForSelector('#gf', { timeout: 30000 }); await p.click('#gup');
 const reqs = []; p.on('request', r => { if (/\/auth\/v1\/signup/.test(r.url())) reqs.push(r.url()); });
-const msgAfter = async () => { await p.click('#sbUp'); await p.waitForTimeout(400); return p.textContent('#sbm'); };
+const msgAfter = async () => { await p.click('#ggo'); await p.waitForTimeout(600); return p.textContent('#gm'); };
 ok(/Enter your email/.test(await msgAfter()), 'empty form: clear email error');
-await p.fill('#sbf [name=email]', 'not-an-email'); ok(/doesn.t look right/.test(await msgAfter()), 'bad email format rejected');
-await p.fill('#sbf [name=email]', 'a@b.co'); await p.fill('#sbf [name=password]', 'short'); ok(/at least 8/.test(await msgAfter()), 'short password rejected');
-ok(reqs.length === 0, 'no sign-up request sent for invalid input (no 422)'); await p.fill('#sbf [name=email]', users.dispatcher.email); await p.fill('#sbf [name=password]', users.dispatcher.password); await p.click('#sbf button.gold');
+await p.fill('#gf [name=email]', 'not-an-email'); ok(/doesn.t look right/.test(await msgAfter()), 'bad email format rejected');
+await p.fill('#gf [name=email]', 'a@b.co'); await p.fill('#gf [name=password]', 'short'); ok(/at least 8/.test(await msgAfter()), 'short password rejected');
+ok(reqs.length === 0, 'no sign-up request sent for invalid input (no 422)'); await p.click('#gin'); await p.fill('#gf [name=email]', users.dispatcher.email); await p.fill('#gf [name=password]', users.dispatcher.password); await p.click('#ggo');
 const card = `[data-sb="${a.data[0].id}"]`; ok(await p.waitForSelector(card, { timeout: 20000 }).then(() => true).catch(() => false), 'Dispatch Center (signed in) lists server booking');
 await p.fill(card + ' [data-dn]', 'Test Driver'); await p.click(card + ' [data-as]'); ok(await p.waitForSelector(card + ' [data-st="assigned"]', { timeout: 15000 }).then(() => true).catch(() => false), 'one-tap assign saved');
 for (const s of ['en_route', 'arrived', 'in_progress', 'completed']) { await p.click(card + ' [data-nx]'); await p.waitForSelector(card + ` [data-st="${s}"]`, { timeout: 15000 }); }
