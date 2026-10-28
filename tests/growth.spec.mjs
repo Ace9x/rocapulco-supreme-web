@@ -5,7 +5,7 @@ const mob = { viewport: { width: 390, height: 844 }, isMobile: true, geolocation
 test('fare first, deep link + referral, rating actions, rebook/reverse', async ({ browser }) => {
   const ctx = await browser.newContext(mob); const r = await ctx.newPage(); r.on('pageerror', e => console.log('PAGEERR', e.message));
   // deep link from a flyer / driver QR: lands on a priced SUV quote to JFK, no form first
-  await r.goto(`${BASE}?transport=local&ns=${ns}&speed=20&nosplash=1&to=JFK&car=suv&ref=DT555555C`);
+  await r.goto(`${BASE}?transport=local&ns=${ns}&speed=20&nosplash=1&demo=1&to=JFK&car=suv&ref=DT555555C`);
   await expect(r.locator('#fare')).toContainText('$112.50', { timeout: 30000 });
   await expect(r.locator('#gname')).toHaveValue(''); await r.locator('#contact').scrollIntoViewIfNeeded();
   await r.screenshot({ path: OUT + 'growth-01-fare-first-deeplink.png' });

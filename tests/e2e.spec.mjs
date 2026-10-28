@@ -22,7 +22,6 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   await d.screenshot({ path: SHOTS + '04-driver-online.png' });
   await r.goto(url('#/rider'));
   await r.fill('#gname', 'Test Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
-  await r.uncheck('#demo');
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#note', 'By the green awning');
   await r.click('#pay [data-m=zelle]');
@@ -71,12 +70,15 @@ test('rider + real driver complete a full trip with simulated GPS', async ({ bro
   const f = +fareTxt.replace('$', ''); await expect(d.locator('#etoday')).toHaveText('$' + (Math.round(f * 70) / 100).toFixed(2));
   await expect(d.locator('#esplit')).toContainText('Rocapulco (30%)');
   await d.screenshot({ path: SHOTS + '10-driver-earnings.png' });
-  const a = await ctx.newPage(); await a.goto(url('#/admin')); await a.waitForTimeout(4000);
+  const a = await ctx.newPage(); await a.goto(url('#/admin')); await expect(a.locator('#qtabs')).toBeVisible({ timeout: 20000 }); await a.waitForTimeout(3000);
   await a.screenshot({ path: SHOTS + '11-dispatcher.png' });
+  // a real rider's problem report reaches dispatch (signed by the trip key, verified against the server booking)
+  await r.click('#prob'); await r.fill('#ptx', 'Test report — please ignore'); await r.click('#psend'); await expect(r.locator('#probok')).toBeVisible({ timeout: 15000 });
+  await expect(a.locator('#rp')).toContainText('Trip problem', { timeout: 20000 }); await a.screenshot({ path: SHOTS + '16-dispatcher-report.png' });
 });
 test('demo mode: rider completes trip with a simulated driver', async ({ browser }) => {
   const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.7128, longitude: -73.8314 }, permissions: ['geolocation'] });
-  const r = await ctx.newPage(); await r.goto(url('#/rider'));
+  const r = await ctx.newPage(); await r.goto(url('#/rider', '&demo=1'));
   await r.fill('#gname', 'Demo Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'Flushing Meadows Corona Park'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
@@ -88,10 +90,10 @@ test('demo mode: rider completes trip with a simulated driver', async ({ browser
   await r.screenshot({ path: SHOTS + '13-demo-receipt.png' });
 });
 
-test('no-show: rider reports driver who never showed, $0 charge, dispatcher sees it', async ({ browser }) => {
+test('no-show (demo): rider reports driver who never showed, $0 charge; demo stays off real dispatch', async ({ browser }) => {
   const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
   const a = await ctx.newPage(); const r = await ctx.newPage();
-  await a.goto(url('#/admin')); await r.goto(appUrl(BASE, `?transport=${T}&ns=${ns}&speed=1&testfast=1`, '#/rider'));
+  await a.goto(url('#/admin')); await r.goto(appUrl(BASE, `?transport=${T}&ns=${ns}&speed=1&testfast=1&demo=1`, '#/rider')); await expect(r.locator('#demoban')).toBeVisible();
   await r.fill('#gname', 'NoShow Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'Beach 116 Street Rockaway'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });
@@ -103,8 +105,7 @@ test('no-show: rider reports driver who never showed, $0 charge, dispatcher sees
   await r.screenshot({ path: SHOTS + '14-rider-noshow-button.png' });
   await r.click('#ns'); await expect(r.locator('#nsdone')).toBeVisible(); await expect(r.locator('.card')).toContainText('$0.00');
   await r.screenshot({ path: SHOTS + '15-rider-noshow-reported.png' });
-  await expect(a.locator('#rp')).toContainText('Driver no-show', { timeout: 15000 });
-  await a.screenshot({ path: SHOTS + '16-dispatcher-report.png' });
+  await a.waitForTimeout(3000); await expect(a.locator('#rp')).not.toContainText('Driver no-show');  // demo rides never reach real dispatch
 });
 test('dispatch center: one-tap assign after a decline; popular destination; no charge when driver cancels', async ({ browser }) => {
   const opt = { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] };
@@ -115,8 +116,8 @@ test('dispatch center: one-tap assign after a decline; popular destination; no c
   await d.check('#sim'); await goOnline(d);
   await a.goto(url('#/admin'));
   await r.goto(url('#/rider')); await r.fill('#gname', 'Assign Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
-  await r.uncheck('#demo'); await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
-  await expect(r.locator('#pop button')).toHaveCount(6);
+  await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
+  await r.click('#popd summary'); await expect(r.locator('#pop button')).toHaveCount(4);  // JFK/LGA live only in the airport chips
   await r.click('#pop [data-p="2"]'); await expect(r.locator('#fare')).toContainText('$', { timeout: 20000 });
   await r.screenshot({ path: SHOTS + '17-rider-popular-destinations.png' });
   await r.check('#agree'); await r.click('#req'); await expect(d.locator('#acc')).toBeVisible({ timeout: 20000 });
@@ -137,7 +138,7 @@ test('dispatch center: one-tap assign after a decline; popular destination; no c
 });
 test('scheduled ride: saved, alert when dispatch opens, demo driver confirms', async ({ browser }) => {
   const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 }, isMobile: true, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
-  const r = await ctx.newPage(); await r.goto(url('#/rider', '&leadmin=8'));
+  const r = await ctx.newPage(); await r.goto(url('#/rider', '&leadmin=8&demo=1'));
   await r.fill('#gname', 'Sched Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
   await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.fill('#de', 'JFK Airport Terminal 4'); await r.locator('#del li[data-i]').first().click({ timeout: 15000 });

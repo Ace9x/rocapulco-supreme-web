@@ -223,3 +223,5 @@ h1 span{font-style:italic}.lbl,h3{letter-spacing:.12em}
 .qrbox{background:#fff;border-radius:12px;padding:10px;width:220px;margin:10px auto}.qrbox svg{width:100%;height:auto;display:block}
 .hrs .bar{height:6px;border-radius:3px;background:#2a2a2e;margin:6px 0}.hrs .bar i{display:block;height:100%;border-radius:3px;background:#9CA3AF}.hrs.warn .bar i{background:#f0b35a}.hrs.blocked .bar i{background:#ff8a80}
 .fshift ol{padding-left:20px;margin:8px 0}.fshift li{margin:4px 0}.card.assign.late{border-color:#ff8a80;box-shadow:0 0 0 1px rgb(255 138 128/.4)}
+.demoban{position:fixed;top:0;left:0;right:0;z-index:9999;background:#f0b35a;color:#0B0B0C;text-align:center;font:600 13px/1.4 Inter,system-ui;padding:6px 10px}.demoban a{color:#0B0B0C;text-decoration:underline}
+.net a{color:inherit;text-decoration:underline}.locask{margin:8px 0}

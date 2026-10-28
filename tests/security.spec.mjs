@@ -26,7 +26,7 @@ test('forged relay messages are rejected; signed + booked flow still works', asy
   // real rider books; the driver receives a signed, server-booked offer
   await r.goto(url('#/rider')); if (await r.locator('#onbskip').count()) await r.click('#onbskip');
   await r.fill('#gname', 'Sec Rider'); await r.fill('#gphone', '718' + String(Math.random()).slice(2, 9));
-  await r.uncheck('#demo'); await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
+  await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 15000 });
   await r.click('#sc [data-sc=jfk]'); await expect(r.locator('#fare')).toHaveText('$75.00', { timeout: 25000 });
   await r.check('#agree'); await r.click('#req');
   await expect(d.locator('#acc')).toBeVisible({ timeout: 30000 });

@@ -38,8 +38,8 @@ const NOSHOW_SCALE = Q.get('testfast') ? 0 : 1;
 const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
 let netT; const setNet = (s) => { const n = $('#net'); if (!n) return; clearTimeout(netT);
-  n.textContent = s === 'online' ? 'Live' : s === 'local' ? 'Local' : s === 'offline' ? 'Offline' : 'Reconnecting…'; n.className = 'net ' + (s === 'online' || s === 'local' ? s : 'reconnecting');
-  if (s !== 'online' && s !== 'local') netT = setTimeout(() => { n.innerHTML = 'Offline · <u>retry</u>'; n.onclick = () => location.reload(); n.title = 'Live updates paused. Call dispatch (718) 474-7100 if you need a ride now.'; }, 15000); };
+  n.textContent = s === 'online' ? 'Dispatch online' : s === 'local' ? 'Test mode (this device)' : s === 'offline' ? 'Offline' : 'Reconnecting…'; n.className = 'net ' + (s === 'online' || s === 'local' ? s : 'reconnecting');
+  if (s !== 'online' && s !== 'local') netT = setTimeout(() => { n.innerHTML = `Dispatch offline · <a href="tel:${DISPATCH_TEL}">Call ${DISPATCH_PHONE}</a>`; n.onclick = (e) => { if (e.target.tagName !== 'A') location.reload(); }; n.title = 'Live updates paused — tap to retry, or call dispatch to book by phone.'; }, s === 'offline' ? 0 : 15000); };
 setTimeout(() => { if (/connecting/i.test($('#net')?.textContent || '')) setNet('reconnecting'); }, 6000);
 addEventListener('offline', () => setNet('offline'));
 const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: setNet });
@@ -49,11 +49,12 @@ const bus = createBus({ transport: Q.get('transport'), ns: NS, onStatus: setNet 
 // Demo drivers live only inside this page (localOnly + a per-page secret), so they can't be spoofed from outside.
 const SIM_SECRET = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const isSim = (m) => m && m._sim === SIM_SECRET;
+const demoTrips = new Set();  // demo-mode rides never leave this device
 let signer = null;                                   // staff signer after sign-in (driver / dispatch apps)
 const riderKeys = new Map(), tripPubs = new Map();   // tripId -> my rider key / trusted rider public key
 const rawPublish = bus.publish.bind(bus); let chain = Promise.resolve();
 bus.publish = (topic, msg, opt = {}) => {
-  if (opt.localOnly || isSim(msg)) return rawPublish(topic, msg, opt);
+  if (opt.localOnly || isSim(msg) || (demoTrips.size && demoTrips.has(topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('reports/') ? msg?.trip : ''))) return rawPublish(topic, msg, { ...opt, localOnly: true });
   const tid = topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('offer/') ? msg?.trip?.id : topic.startsWith('reports/') ? msg?.trip : null;
   const rk = !signer && tid && riderKeys.get(tid);
   const job = async () => { let out = msg; try { if (signer) out = await sign(signer.priv, signer.kid, topic, msg); else if (rk) out = await sign(rk.priv, 'r:' + tid, topic, msg); } catch (e) { console.warn('sign failed', e.message); } rawPublish(topic, out, opt); };
@@ -314,11 +315,10 @@ function onboarding() {
 function home() {
   sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>Rocapulco <span>Supreme</span></h1><p class="muted">Black-car luxury for Far Rockaway & all of NYC. Real human dispatch, upfront fares, <b>no surge, ever</b>.</p></div>
   <p class="promise" id="promise">${ic('shield')}<span>JFK <b>$75</b> flat · LGA <b>$82.50</b> · No surge, ever</span><button class="btn link sm" id="fares" aria-expanded="false">Fares</button></p>
-  <div id="faresheet" hidden class="card"><div class="row"><span>Black Sedan</span><span>$3.50 + $2.50/mi + $0.40/min · $10 min</span></div><div class="row"><span>Black SUV</span><span>1.5× · $15 min · JFK $112.50 · LGA $123.75</span></div><div class="row"><span>Payment</span><span>Cash, card, Zelle or Venmo, to the driver</span></div><p class="fine">${POLICY}</p></div>
+  <div id="faresheet" hidden class="card"><div class="row"><span>Black Sedan</span><span>$3.50 + $2.50/mi + $0.40/min · $10 min</span></div><div class="row"><span>Black SUV</span><span>1.5× · $15 min · JFK $112.50 · LGA $123.75</span></div><div class="row"><span>Payment</span><span>Cash, card, Zelle or Venmo, to the driver</span></div><div class="row"><span>Tolls</span><span>Not included · paid at cost</span></div><div class="row"><span>Waiting</span><span>5 min free at pickup · no wait charges</span></div><div class="row"><span>Extra stops</span><span>One stop per booking · call dispatch for more</span></div><p class="fine">${POLICY}</p></div>
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
   ${callBtn()}
-  <a class="btn link drivecta" id="drivecta" href="driver/join/">${ic('car', 'sm')}Drive with us — keep 70% of every fare</a>
-  <p class="fine legal">Licensed NYC car service · ${tlcLine()}<a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a></p>`;
+  <p class="fine legal">Licensed NYC car service · ${tlcLine()}<a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a> · <a id="drivecta" href="driver/join/">Drive with us</a></p>`;
   $('#fares').onclick = () => { const f = $('#faresheet'); f.hidden = !f.hidden; $('#fares').setAttribute('aria-expanded', String(!f.hidden)); };
   onboarding();
 }
@@ -339,7 +339,7 @@ function rider() {
   // Price first: no form before the quote. Name + phone are asked right above "Request ride".
   ((done) => done(store.get('profile_rider') || { id: 'rdr-' + uid(), name: '', phone: '', guest: true }))((me) => {
     const drivers = new Map(), dmk = new Map();
-    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = store.get('demo', true), payM = store.get('pay', 'cash'), vcls = store.get('vclass', 'sedan');
+    let pickup = null, dest = null, rt = null, fare = null, trip = null, sims = [], demo = DL.get('demo') === '1', payM = store.get('pay', 'cash'), vcls = store.get('vclass', 'sedan');
     let pinP, pinD, line, carMk, tick;
     vsub('drivers/+', (d, _t, v) => {
       if (isSim(d) ? d.owner !== me.id : !(v?.staff && STAFF.includes(v.role))) return;
@@ -378,9 +378,9 @@ function rider() {
       <div class="shortcuts" id="sc"><button class="ds-chip sc air" data-sc="jfk">${ic('plane')}JFK <b>${money(ratesFor(vcls).jfk).replace('.00', '')}</b></button><button class="ds-chip sc air" data-sc="lga">${ic('plane')}LGA <b>${money(ratesFor(vcls).laguardia)}</b></button><button class="ds-chip sc" id="terms-open" aria-expanded="false">${ic('plane')}Terminals</button>${PLACES.map(([k, n, i]) => { const pl = store.get('place_' + k); return `<button class="ds-chip sc" data-sc="${k}">${ic(i)}${pl ? n : 'Set ' + n}</button>`; }).join('')}</div>
       <div id="airp" class="card airp" hidden></div>
       ${recent.length ? `<div class="lbl">${ic('history')}Recent trips</div><div class="pop" id="recent">${recent.map((r, i) => `<button class="ds-chip" data-rc="${i}">${ic('history')}${esc(r.to.split(',')[0])}</button>`).join('')}</div>` : ''}
-      <div class="lbl">${ic('pin')}Landmarks</div><div class="pop" id="lmk">${LANDMARKS.map((l, i) => `<button class="ds-chip" data-lm="${i}">${esc(l.k)}</button>`).join('')}</div>
+      <details class="popplaces" id="popd"><summary class="lbl">${ic('pin')}Popular places — landmarks, stations, hospitals</summary><div class="pop" id="lmk">${LANDMARKS.map((l, i) => `<button class="ds-chip" data-lm="${i}">${esc(l.k)}</button>`).join('')}</div>
       ${pops.length ? `<div class="lbl">${ic('spark')}Popular pickups near you</div><div class="pop" id="pps">${pops.map((d, i) => `<button class="ds-chip" data-pp="${i}">${ic('pin')}${esc(d.label)}</button>`).join('')}</div>` : ''}
-      <div class="lbl">${ic('flag')}Popular destinations</div><div class="pop" id="pop">${POPULAR.map((d, i) => `<button class="ds-chip" data-p="${i}">${esc(d.k)}</button>`).join('')}</div>
+      <div class="pop" id="pop">${POPULAR.map((d, i) => /^(JFK|LGA)/i.test(d.k) ? '' : `<button class="ds-chip" data-p="${i}">${esc(d.k)}</button>`).join('')}</div></details>
       <input id="note" placeholder="Note for driver (e.g. blue door, by the bodega)" maxlength="120" value="${esc(pickup?.note0 ?? pickup?.note ?? '')}">
       <div class="two eq"><input id="cross" placeholder="Cross street" maxlength="60" aria-label="Cross street" value="${esc(pickup?.cross || '')}"><input id="side" placeholder="Which side / entrance" maxlength="60" aria-label="Which side / entrance" value="${esc(pickup?.side || '')}"></div>
       <p class="fine">Drag the gold <b>A</b> pin to your exact spot. Tap the map to set the destination.</p>
@@ -389,7 +389,6 @@ function rider() {
       <div class="paysel"><span class="lbl">${ic('wallet')}Pay driver with</span><div class="seg" id="pay">${Object.entries(PAYMENTS).map(([k, v]) => `<button data-m="${k}" class="${k === payM ? 'on' : ''}">${ic(PAY_IC[k])}${v}</button>`).join('')}</div></div>
       ${bh ? `<p class="fine learn" id="bh">${ic('spark')}${bh.busy ? 'Busy hour' : 'Typical hour'}: riders usually get a driver in about ${fmtMin(bh.avgWaitSec)} at this time (learned from ${bh.samples} past rides).</p>` : ''}
       <label class="tog"><input type="checkbox" id="wav" ${store.get('wav', false) ? 'checked' : ''}> ${ic('user', 'sm')} I need a wheelchair-accessible vehicle (ramp or lift)</label>
-      <label class="tog"><input type="checkbox" id="demo" ${demo ? 'checked' : ''}> Demo mode — show simulated drivers (clearly labeled)</label>
       <div id="est"></div>
       <label class="tog consent"><input type="checkbox" id="agree" ${store.get('consent')?.v === TERMS_V ? 'checked' : ''}> I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms &amp; fare policy</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a></label>
       <div class="card contact" id="contact"><div class="lbl">${ic('user', 'sm')}Your name and phone — your driver texts or calls this number</div>
@@ -414,7 +413,7 @@ function rider() {
       sheet.querySelectorAll('#pop [data-p]').forEach(b => b.onclick = () => setDest(POPULAR[+b.dataset.p]));
       sheet.querySelectorAll('#pay [data-m]').forEach(b => b.onclick = () => { payM = b.dataset.m; store.set('pay', payM); sheet.querySelectorAll('#pay button').forEach(x => x.classList.toggle('on', x === b)); });
       $('#gps').onclick = locate; $('#hist').onclick = (e) => { e.preventDefault(); history(); };
-      $('#demo').onchange = (e) => { demo = e.target.checked; store.set('demo', demo); demo ? spawnSims() : stopSims(); };
+      if (demo && !$('#demoban')) { const b = document.createElement('div'); b.id = 'demoban'; b.className = 'demoban'; b.innerHTML = `<b>DEMO MODE</b> — simulated cars, no real rides or bookings. <a href="./">Exit demo</a>`; document.body.prepend(b); }
       const syncNote = () => { if (!pickup) return; pickup.note0 = $('#note').value; pickup.cross = $('#cross').value.trim(); pickup.side = $('#side').value.trim();
         pickup.note = [pickup.note0, pickup.cross && 'Cross st: ' + pickup.cross, pickup.side && 'Side/entrance: ' + pickup.side].filter(Boolean).join(' · '); };
       ['#note', '#cross', '#side'].forEach(id => $(id).oninput = syncNote);
@@ -437,6 +436,7 @@ function rider() {
       function askLoc() { if (!$('#pu') || pickup) return; $('#pu').placeholder = 'Type your pickup address'; const n = document.createElement('div'); n.className = 'card locask'; n.id = 'locask';
         n.innerHTML = `<b>${ic('locate', 'sm')} Use your location for pickup?</b><p class="fine">Rocapulco uses your precise location only to set your pickup and show nearby cars. It is shared with your driver only during your ride. We never sell it. <a href="privacy.html">Privacy</a></p><div class="two eq"><button class="btn alt" id="locok">Use my location</button><button class="btn link" id="locnx">I'll type it</button></div>`;
         $('.routebox')?.after(n); $('#locok').onclick = () => { n.remove(); locate(); }; $('#locnx').onclick = () => n.remove(); }
+      if (!dest && !plan.dl) { const d = store.get('draft'); if (d?.dest && Date.now() - d.at < 6 * 36e5) setDest(d.dest); }   // keep the draft destination across refreshes (6 h)
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
     }
     let ready = false; const syncReq = () => { if ($('#req')) $('#req').disabled = !(ready && store.get('consent')?.v === TERMS_V); };  // contact is checked on tap so the price never hides behind a form
@@ -502,7 +502,7 @@ function rider() {
       if (pinP) pinP.setLatLng(p); else { pinP = L.marker(p, { icon: pinA, draggable: true, zIndexOffset: 900 }).addTo(layer); pinP.on('dragend', async () => { const ll = pinP.getLatLng(); setPickup({ lat: ll.lat, lng: ll.lng }, await reverse({ lat: ll.lat, lng: ll.lng }), false); }); }
       if (recenter) map.setView(p, 16); if (sims.length && haversine(sims[0], p) > 3000) stopSims(); spawnSims(); estimate();
     }
-    async function setDest(p, jump) { dest = { lat: p.lat, lng: p.lng, label: p.label || await reverse(p) }; if ($('#de')) $('#de').value = dest.label; pinD ? pinD.setLatLng(p) : (pinD = L.marker(p, { icon: pinB }).addTo(layer)); await estimate(); if (jump) $('#vc')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    async function setDest(p, jump) { dest = { lat: p.lat, lng: p.lng, label: p.label || await reverse(p) }; store.set('draft', { dest, at: Date.now() }); if ($('#de')) $('#de').value = dest.label; pinD ? pinD.setLatLng(p) : (pinD = L.marker(p, { icon: pinB }).addTo(layer)); await estimate(); if (jump) $('#vc')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     const onTap = (e) => { if (trip) return; setDest({ lat: e.latlng.lat, lng: e.latlng.lng }); };
     const onHold = (e) => { if (trip) return; reverse(e.latlng).then(l => setPickup(e.latlng, l, false)); };
     map.on('click', onTap); map.on('contextmenu', onHold); cleanup.push(() => { map.off('click', onTap); map.off('contextmenu', onHold); });
@@ -528,8 +528,8 @@ function rider() {
       trip.pinHash = await sha(trip.id + ':' + trip.pin);
       const rk = await newKeyPair(); riderKeys.set(trip.id, rk); tripPubs.set(trip.id, rk.pub); trip.riderPub = rk.pub;
       vsub('trip/' + trip.id, onTrip);
-      trip.booked = import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; return true; }).catch(e => { console.warn('server booking failed — real drivers cannot verify this ride', e.message); return false; });
-      await trip.booked; bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) });
+      if (demo) { trip.demo = true; demoTrips.add(trip.id); trip.booked = Promise.resolve(false); } else trip.booked = import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; return true; }).catch(e => { console.warn('server booking failed — real drivers cannot verify this ride', e.message); return false; });
+      await trip.booked; store.set('draft', null); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }, { localOnly: !!trip.demo });
       dispatch('Finding your driver…');
     }
     // Relay messages are public: send only first name + last 4 of the phone (full details stay on the protected server booking).

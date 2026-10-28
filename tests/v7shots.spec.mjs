@@ -7,7 +7,7 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     const p = await ctx.newPage(), errs = [];
     p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|tile|ERR_/i.test(m.text())) errs.push(m.text()); });
     p.on('pageerror', e => errs.push(e.message));
-    const NSV = `?transport=local&ns=v7${tag}${Date.now()}&speed=20`, u = (h) => appUrl(BASE, NSV, h);
+    const NSV = `?transport=local&ns=v7${tag}${Date.now()}&speed=20&demo=1`, u = (h) => appUrl(BASE, NSV, h);
     await p.goto(u('#/')); await expect(p.locator('#splash')).toBeVisible(); await p.waitForTimeout(700); await p.screenshot({ path: OUT + `${tag}-00-splash.png` });
     await expect(p.locator('#splash')).toHaveCount(0, { timeout: 4000 });
     await p.click('#onbskip');
@@ -24,7 +24,7 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     await p.screenshot({ path: OUT + `${tag}-02b-terminals.png` });
     await p.locator('#airp [data-tm]').nth(1).click(); await expect(p.locator('#pu')).toHaveValue(/LaGuardia Airport Terminal B/); await expect(p.locator('#note')).toHaveValue(/Arrivals LGA B/);
     await p.fill('#cross', 'Departures roadway'); await p.fill('#side', 'Door 4');
-    await p.locator('#lmk [data-lm]').filter({ hasText: 'Citi Field' }).click(); await expect(p.locator('#de')).toHaveValue(/Citi Field/); await expect(p.locator('#fare')).toContainText('$', { timeout: 25000 });
+    await p.click('#popd summary'); await p.locator('#lmk [data-lm]').filter({ hasText: 'Citi Field' }).click(); await expect(p.locator('#de')).toHaveValue(/Citi Field/); await expect(p.locator('#fare')).toContainText('$', { timeout: 25000 });
     await p.screenshot({ path: OUT + `${tag}-02c-landmark-quote.png` });
     await p.fill('#de', '12345 101 Ave'); await expect(p.locator('#del li').first()).toBeVisible({ timeout: 15000 });
     await p.screenshot({ path: OUT + `${tag}-02d-queens-address.png` });
