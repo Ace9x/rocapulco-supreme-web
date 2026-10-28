@@ -39,6 +39,13 @@ const fmtDist = (m) => m < 160 ? Math.round(m * 3.281 / 10) * 10 + ' ft' : (m / 
 const LEAD_MS = (+Q.get('leadmin') || 30) * 60e3;           // scheduled-ride dispatch lead (test override)
 const NOSHOW_GRACE = Q.get('testfast') ? 3 : 300;            // seconds after promised ETA before "driver never showed"
 const NOSHOW_SCALE = Q.get('testfast') ? 0 : 1;
+const RIDER_WAIT_S = Q.get('testfast') ? 5 : 300;              // free wait at pickup before the driver may cancel as a rider no-show (no charge)
+// Driver queues: FIFO by the time an available driver entered the zone. Airports are the FHV staging areas' surroundings (radius, not exact lot polygons).
+const ZONES = [{ k: 'JFK', lat: 40.6441, lng: -73.7822, r: 2600, air: true }, { k: 'LGA', lat: 40.7769, lng: -73.8740, r: 1600, air: true },
+  { k: 'Far Rockaway', lat: 40.6054, lng: -73.7551, r: 2500 }, { k: 'Rockaway Park', lat: 40.5806, lng: -73.8364, r: 2500 }, { k: 'Jamaica', lat: 40.7027, lng: -73.7890, r: 2500 },
+  { k: 'Flushing', lat: 40.7580, lng: -73.8303, r: 2500 }, { k: 'Long Island City', lat: 40.7447, lng: -73.9485, r: 2200 }];
+const zoneOf = (p) => p?.lat == null ? null : ZONES.find(z => haversine(p, z) <= z.r)?.k || null;
+const queueOf = (drivers, zone, now = Date.now()) => drivers.filter(d => d.zone === zone && d.status === 'available' && now - d.ts < 60000).sort((a, b) => (a.zoneAt || 0) - (b.zoneAt || 0));
 const QUEENS = { lat: 40.6054, lng: -73.7551 }; // Far Rockaway
 
 let netT; const setNet = (s) => { const n = $('#net'); if (!n) return; clearTimeout(netT);
@@ -60,8 +67,8 @@ const rawPublish = bus.publish.bind(bus); let chain = Promise.resolve();
 bus.publish = (topic, msg, opt = {}) => {
   if (opt.localOnly || isSim(msg) || (demoTrips.size && demoTrips.has(topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('reports/') ? msg?.trip : ''))) return rawPublish(topic, msg, { ...opt, localOnly: true });
   const tid = topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('offer/') ? msg?.trip?.id : topic.startsWith('reports/') ? msg?.trip : null;
-  const rk = !signer && tid && riderKeys.get(tid);
-  const job = async () => { let out = msg; try { if (signer) out = await sign(signer.priv, signer.kid, topic, msg); else if (rk) out = await sign(rk.priv, 'r:' + tid, topic, msg); } catch (e) { console.warn('sign failed', e.message); } rawPublish(topic, out, opt); };
+  const rk = (!signer || opt.asRider) && tid && riderKeys.get(tid);
+  const job = async () => { let out = msg; try { if (signer && !rk) out = await sign(signer.priv, signer.kid, topic, msg); else if (rk) out = await sign(rk.priv, 'r:' + tid, topic, msg); } catch (e) { console.warn('sign failed', e.message); } rawPublish(topic, out, opt); };
   chain = chain.then(job, job);
 };
 const vcache = new Map();
@@ -557,7 +564,8 @@ function rider() {
         }
         const near = rankDrivers([...drivers.values()].filter(d => VCLASS[trip.vclass || 'sedan'].test(d) && (!trip.wav || d.wav)), pickup, { exclude: trip.excl }).slice(0, 5);
         if (!near.length) { if (Date.now() - t0 > 90000) { sheet.innerHTML = `<h2>No drivers available</h2><p class="muted">${trip.wav ? 'No wheelchair-accessible car is online near you right now.' : 'No online drivers within 9 miles right now.'} Nothing was charged. Call dispatch — a real person will find you a car.</p>${callBtn()}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = plan; trip = null; return; } await wait(2000); continue; }
-        const ranked = rankByRoad(near, await roadTimes(near, pickup)); const c = ranked[0];
+        const pz = ZONES.find(z => z.air && haversine(pickup, z) <= z.r), aq = pz ? queueOf(near, pz.k) : [];
+        const ranked = aq.length ? aq : rankByRoad(near, await roadTimes(near, pickup)); const c = ranked[0];
         trip.state = 'offered'; trip.offerTo = c.id; if ($('#ds')) $('#ds').textContent = `Asking ${c.name}${c.roadSec != null ? ` (${fmtMin(c.roadSec)} away by road)` : ''}…`;
         const simD = sims.find(x => x.id === c.id);
         if (!simD && !(await trip.booked)) { if ($('#ds')) $('#ds').innerHTML = `We couldn't confirm your booking with our server, so drivers can't verify it. Please call dispatch at <a href="tel:${DISPATCH_TEL}">${DISPATCH_PHONE}</a>.`; trip.excl.push(c.id); await wait(2000); continue; }
@@ -631,9 +639,12 @@ function rider() {
         if (trip.state === 'in_progress' && $('#eta')) $('#eta').textContent = fmtMin(m.eta);
         map.panTo([m.lat, m.lng], { animate: true });
       }
-      if (m.type === 'arrived') { trip.state = 'arrived'; $('#st').textContent = 'Your driver has arrived'; if ($('#eta')) $('#eta').textContent = 'Here'; $('#ns') && ($('#ns').hidden = true); navigator.vibrate?.(300); notify('Your driver has arrived'); }
+      if (m.type === 'arrived') { const at = Date.now(); const wt = setInterval(() => { if (!trip || trip.state !== 'arrived' || !$('#st')) return clearInterval(wt); const sec = Math.floor((Date.now() - at) / 1000), left = Math.max(0, RIDER_WAIT_S - sec);
+          $('#st').textContent = left ? `Your driver is here — free wait ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left` : 'Your driver is here — please head out now'; }, 1000); cleanup.push(() => clearInterval(wt)); trip.state = 'arrived'; $('#st').textContent = 'Your driver has arrived'; if ($('#eta')) $('#eta').textContent = 'Here'; $('#ns') && ($('#ns').hidden = true); navigator.vibrate?.(300); notify('Your driver has arrived'); }
       if (m.type === 'start') { trip.state = 'in_progress'; clearInterval(tick); $('#st').textContent = 'On the way to ' + dest.label.split(',')[0]; $('#cx')?.remove(); $('#ns')?.remove(); $('#cxs') && ($('#cxs').textContent = ''); }
       if (m.type === 'edit' && m.fare != null && trip.fare !== m.fare) Object.assign(trip, { fare: m.fare, lines: m.lines });
+      if (m.type === 'cancel' && m.by === 'driver' && m.reason === 'rider_no_show') { const t = trip; trip = null; clearInterval(tick); carMk?.remove();
+        sheet.innerHTML = `<h2 id="rns">Your driver couldn't find you</h2><p class="muted">They waited ${Math.round((m.waited || RIDER_WAIT_S) / 60)} min at ${esc(t.pickup.label?.split(',')[0] || 'the pickup')} and cancelled. <b>You are not charged.</b></p><button class="btn gold" id="again">Book again</button>${callBtn()}`; $('#again').onclick = plan; return; }
       if (m.type === 'cancel' && m.by === 'driver') reassign('Your driver cancelled — you are not charged');
       if (m.type === 'complete') { trip.state = 'completed'; clearInterval(tick); receipt(m); }
       if (m.type === 'paid' && trip.state === 'completed') trip.onPaid?.(m);
@@ -733,7 +744,8 @@ function driver() {
     let docs = null; const cloudP = import('./cloud.js'); (SANDBOX ? Promise.resolve(null) : cloudP.then(c => c.myDocs())).then(d => { docs = d; if ($('#docs')) idle();
       const bad = DOCS.map(([k, n]) => [n, docState(d?.[k])]).filter(([, st]) => st[0] !== 'ok');
       const key = 'docnag_' + new Date().toDateString(); if (d && bad.length && !store.get(key)) { store.set(key, true); notify('Document reminder: ' + bad.map(([n, st]) => n + ' — ' + st[1].toLowerCase()).join('; ')); } }).catch(() => {});
-    const info = () => ({ wav: !!docs?.wav, id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
+    const peers = new Map(); let zone = null, zoneAt = 0; const info = () => { const z = status === 'available' ? zoneOf(loc) : null; if (z !== zone) { zone = z; zoneAt = Date.now(); } return infoX(); };
+    const infoX = () => ({ zone, zoneAt, wav: !!docs?.wav, id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
     const drvRef = () => 'D' + (String(me.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-7) || me.id.slice(-5).toUpperCase());
     const avgRating = () => { const r = store.get('ratings', []); return r.length ? +(r.reduce((a, b) => a + b, 0) / r.length).toFixed(2) : 5.0; };
     // Off shift = no tracking: offline sends one "offline" message with no coordinates, and the GPS watch is stopped.
@@ -744,6 +756,7 @@ function driver() {
       if (!force && lastPub && lastPub.status === status && haversine(lastPub, loc) < 25 && Date.now() - lastPub.ts < 15000) return;
       lastPub = { lat: loc.lat, lng: loc.lng, status, ts: Date.now() }; bus.publish('drivers/' + me.id, info()); };
     every(() => presence(), 5000);
+    vsub('drivers/+', (d, _t, v) => { if (d.id === me.id || !(v?.staff && STAFF.includes(v.role))) return; peers.set(d.id, d); });
     vsub('offer/' + me.id, async (m, _t, v) => {
       const t0 = m?.trip; if (!t0?.id) return;
       const viaDispatch = v?.staff && DISPATCHERS.includes(v.role), viaRider = v?.rider && v.tid === t0.id;
@@ -776,6 +789,7 @@ function driver() {
       sheet.innerHTML = `${tabs('driver')}<div class="hi">${esc(me.name)} · ${esc(me.car)} · ${esc(me.plate)}</div>
       <button class="btn big ${online ? 'alt' : ''}" id="tg">${online ? 'Go offline' : 'Go online'}</button><div id="gate"></div>
       ${(() => { const ph = passengerHours(store.get('history_driver', [])); return `<div class="card hrs ${ph.blocked ? 'blocked' : ph.warn ? 'warn' : ''}" id="hrs"><div class="row"><span>Passenger hours · last 24 h</span><b>${ph.dayH.toFixed(1)} / 10</b></div><div class="bar"><i style="width:${Math.min(100, ph.dayH * 10)}%"></i></div><div class="row"><span>This week (Mon–Sun)</span><b>${ph.weekH.toFixed(1)} / 60</b></div>${ph.why ? `<p class="fine">${esc(ph.why)}</p>` : ph.warn ? '<p class="fine">Close to the TLC limit — plan your last ride.</p>' : ''}</div>`; })()}
+      <div class="card dq" id="dq" ${online ? '' : 'hidden'}></div>
       ${store.get('first_shift_done') ? '' : `<details class="card fshift" id="fshift" open><summary><b>${ic('check', 'sm')} First shift checklist</b></summary><ol><li>Go online when you're ready; a ride offer rings with the pickup, drop-off and your 70% take.</li><li>Accept, then tap <b>Navigate</b> to open Google Maps or Waze.</li><li>At pickup ask the rider for their <b>4-digit PIN</b> before you start.</li><li>Fare is locked upfront — collect exactly what the app shows, then tap <b>Mark as paid</b>.</li><li>Problem or emergency: call 911 first, then dispatch ${DISPATCH_PHONE}.</li></ol><button class="btn alt sm" id="fsdone">Got it</button></details>`}
       ${docsCard()}
       <p id="dst" class="muted">${online ? '<i class="live"></i>Online — waiting for ride requests near you' : '<i class="off"></i>Offline'}</p>
@@ -791,6 +805,11 @@ function driver() {
         <p class="fine">Code <b>${esc(drvRef())}</b> — rides booked from this card show “Referred · ${esc(drvRef())}” to dispatch.</p><button class="btn alt" id="qrprint">Print card</button></details>
       <a href="#" id="eh" class="btn link">Trip log</a>`;
       wireDocs();
+      const drawQ = () => { const el = $('#dq'); if (!el) return; if (!online || status !== 'available') { el.hidden = true; return; } const z = zoneOf(loc);
+        if (!z) { el.hidden = false; el.innerHTML = `<span class="muted">${ic('pin', 'sm')} Not in a queue zone — rides come by distance.</span>`; return; }
+        const q = queueOf([...peers.values(), { id: me.id, zone, zoneAt, status, ts: Date.now() }], z), pos = q.findIndex(d => d.id === me.id) + 1;
+        el.hidden = false; el.innerHTML = `<b>${esc(z)} queue</b> <span class="ds-badge flat" id="qpos">#${pos} of ${q.length}</span><div class="fine">${ZONES.find(x => x.k === z)?.air ? 'Airport pickups go to the first car in line.' : 'First in line is offered nearby rides first when cars are equally close.'}</div>`; };
+      drawQ(); every(drawQ, 5000);
       $('#fsdone') && ($('#fsdone').onclick = () => { store.set('first_shift_done', true); $('#fshift').remove(); });
       $('#qrc').ontoggle = async () => { if (!$('#qrc').open || $('#qrbox').childElementCount) return; const { default: qr } = await import('./vendor/qrcode.js'); const q = qr(0, 'M'); q.addData(refLink(drvRef()) + '&nosplash=1'); q.make();
         $('#qrbox').innerHTML = q.createSvgTag({ cellSize: 5, margin: 3, scalable: true }); $('#qrbox svg').setAttribute('aria-label', 'QR code: ' + refLink(drvRef())); };
@@ -885,11 +904,14 @@ function driver() {
     function arrived() { phase = 'waiting'; bus.publish('trip/' + trip.id, { type: 'arrived', driver: me.id }); ev('arrived'); speak('Arrived. Waiting for rider.');
       sheet.innerHTML = `<h2>Waiting for ${esc(trip.rider.name)}</h2><p class="muted">The rider has been notified you're here.</p>${trip.wav ? `<p class="ds-badge up">${ic('user', 'sm')}Wheelchair-accessible ride — deploy ramp/lift</p>` : ''}
       <label class="pinin">Ask the rider for their 4-digit ride PIN<input id="pinin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="••••"></label><p class="err" id="pinerr" hidden>That PIN doesn't match. Check you have the right rider.</p>
-      <button class="btn" id="start" ${trip.pinHash ? 'disabled' : ''}>Start trip</button><button class="btn link" id="dcx">Rider no-show — cancel</button>`;
+      <p class="wait" id="wait">${ic('clock', 'sm')} Waiting <b id="wt">0:00</b> · free wait ${Math.round(RIDER_WAIT_S / 60) || 1} min</p>
+      <button class="btn" id="start" ${trip.pinHash ? 'disabled' : ''}>Start trip</button><button class="btn link" id="dcx" disabled>Rider no-show — available after the free wait</button>`;
+      const at = Date.now(), wt = setInterval(() => { if (!$('#wt')) return clearInterval(wt); const sec = Math.floor((Date.now() - at) / 1000); $('#wt').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+        if (sec >= RIDER_WAIT_S && $('#dcx').disabled) { $('#dcx').disabled = false; $('#dcx').textContent = 'Rider no-show — cancel (no charge)'; $('#wait').classList.add('over'); } }, 1000); cleanup.push(() => clearInterval(wt));
       $('#pinin').oninput = (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4); $('#start').disabled = e.target.value.length !== 4 && !!trip.pinHash; $('#pinerr').hidden = true; };
       $('#start').onclick = async () => { if (trip.pinHash && (await sha(trip.id + ':' + $('#pinin').value)) !== trip.pinHash) { $('#pinerr').hidden = false; navigator.vibrate?.(200); return; }
         trip.startedAt = Date.now(); bus.publish('trip/' + trip.id, { type: 'start', driver: me.id }); ev('start'); navTo('trip'); };
-      $('#dcx').onclick = () => { bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver' }); ev('cancel_driver'); endTrip(); idle(); };
+      $('#dcx').onclick = () => { if ((Date.now() - at) / 1000 < RIDER_WAIT_S) return; bus.publish('trip/' + trip.id, { type: 'cancel', by: 'driver', reason: 'rider_no_show', waited: Math.round((Date.now() - at) / 1000) }); ev('cancel_driver', { reason: 'rider_no_show', waited_s: Math.round((Date.now() - at) / 1000) }); notify('Cancelled as rider no-show. No charge to the rider.'); endTrip(); idle(); };
     }
     function complete() {
       const f = { total: trip.fare, lines: trip.lines }; // upfront fare is locked — no surprises
@@ -909,15 +931,54 @@ function driver() {
 }
 
 // ===== DISPATCHER =====
+// Phone booking: the dispatcher books for a caller. The ride gets its own rider key (held by this dispatch device) and a server booking,
+// so drivers verify it exactly like an app booking. The caller's PIN is read out by phone.
+function phoneBooking(onBooked) {
+  let pu = null, de = null, q = null; const recent = store.get('phone_recent', {});
+  const quote = async () => { q = null; $('#phgo').disabled = true; if (!pu || !de) return; $('#phq').textContent = 'Pricing…';
+    const rt = await route(pu, de), v = $('#phcls').value; q = { rt, f: estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: de.label, vclass: v }), v };
+    $('#phq').innerHTML = `Quote to read to the caller: <b id="phfare">${money(q.f.total)}</b> ${VCLASS[v].name}${q.f.flat ? ' · airport flat rate' : ''} · ${q.f.miles} mi${rt.real ? '' : ' (approx.)'}`; $('#phgo').disabled = false; };
+  autocomplete($('#phpu'), $('#phpul'), () => QUEENS, r => { pu = r; $('#phpu').value = r.label; quote(); });
+  autocomplete($('#phde'), $('#phdel'), () => pu || QUEENS, r => { de = r; $('#phde').value = r.label; quote(); });
+  $('#phcls').onchange = quote;
+  $('#phphone').oninput = (e) => { const k = e.target.value.replace(/\D/g, '').slice(-10), r = recent[k]; $('#phrec').innerHTML = r ? `<span class="fine">Recent for this caller:</span>${r.map((x, i) => `<button type="button" class="ds-chip" data-rr="${i}">${esc(x.pu.label.split(',')[0])} → ${esc(x.de.label.split(',')[0])}</button>`).join('')}` : '';
+    if (r && !$('#phname').value) $('#phname').value = r[0].name || '';
+    $('#phrec').querySelectorAll('[data-rr]').forEach(b => b.onclick = () => { const x = r[+b.dataset.rr]; pu = x.pu; de = x.de; $('#phpu').value = pu.label; $('#phde').value = de.label; quote(); }); };
+  $('#phf').onsubmit = async (e) => { e.preventDefault(); const phone = $('#phphone').value.trim(), name = $('#phname').value.trim();
+    if (!q || !name || phone.replace(/\D/g, '').length < 10) { $('#phok').innerHTML = '<p class="err">Caller name, a 10-digit phone, pickup and drop-off are required.</p>'; return; }
+    $('#phgo').disabled = true; const pin = newPin(), id = 't-' + uid();
+    const trip = { id, phoneBooking: true, pin, vclass: q.v, pay: $('#phpay').value, rider: { id: 'phone-' + uid(), name, phone }, pickup: { ...pu, note: $('#phnote').value.trim() }, dest: de, fare: q.f.total, lines: q.f.lines, miles: q.f.miles, minutes: q.f.minutes, meters: q.rt.distance, ts: Date.now(), consent: { v: 'phone', at: new Date().toISOString() }, wav: false };
+    trip.pinHash = await sha(id + ':' + pin); const rk = await newKeyPair(); riderKeys.set(id, rk); tripPubs.set(id, rk.pub); trip.riderPub = rk.pub;
+    let ok = SANDBOX; if (!SANDBOX) try { await (await import('./cloud.js')).bookRide(trip); ok = true; } catch (er) { $('#phok').innerHTML = `<p class="err">Server booking failed: ${esc(er.message)}</p>`; $('#phgo').disabled = false; return; }
+    const pubT = { pinHash: trip.pinHash, wav: false, riderPub: trip.riderPub, consent: trip.consent, vclass: trip.vclass, pay: trip.pay, id, phoneBooking: true, rider: { id: trip.rider.id, name: name.split(/\s+/)[0], phone4: phone.replace(/\D/g, '').slice(-4) }, pickup: trip.pickup, dest: de, fare: trip.fare, lines: trip.lines, miles: trip.miles, minutes: trip.minutes, meters: trip.meters, ts: trip.ts };
+    bus.publish('trip/' + id, { type: 'request', trip: pubT }, { asRider: true }); onBooked?.(pubT);
+    const k = phone.replace(/\D/g, '').slice(-10); recent[k] = [{ name, pu, de }, ...(recent[k] || []).filter(x => x.de.label !== de.label)].slice(0, 4); store.set('phone_recent', recent);
+    $('#phok').innerHTML = `<div class="card ok" id="phdone">${ic('check', 'sm')} Booked ${esc(name)} · ${money(trip.fare)}. <b>Read the caller their ride PIN: <span id="phpin">${pin}</span></b> — the driver needs it to start. Offering it to the first car in line now; watch it under <b>New</b>.</div>`;
+    pu = de = q = null; ['#phpu', '#phde', '#phnote'].forEach(x => $(x).value = ''); $('#phq').textContent = ''; };
+}
 function admin() {
   const drivers = new Map(), mk = new Map(), trips = new Map(), reports = [];
   let qtab = 'new';
   sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2>
   <div class="qtabs" role="tablist" id="qtabs"><button role="tab" data-q="new" aria-selected="true">New <b id="qn">0</b></button><button role="tab" data-q="assigned" aria-selected="false">Assigned <b id="qa">0</b></button><button role="tab" data-q="ontrip" aria-selected="false">On trip <b id="qo">0</b></button></div>
   <div id="open" class="queue"></div>
+  <details class="card phb" id="phb"><summary><b>${ic('phone', 'sm')} Phone booking</b> <span class="muted">caller on ${DISPATCH_PHONE}</span></summary><form id="phf" autocomplete="off">
+    <div class="two eq"><input id="phphone" type="tel" placeholder="Caller phone" maxlength="20" required><input id="phname" placeholder="Caller name" maxlength="60" required></div><div id="phrec" class="pop"></div>
+    <input id="phpu" placeholder="Pickup address" required><ul id="phpul" class="sugg"></ul><input id="phde" placeholder="Drop-off address" required><ul id="phdel" class="sugg"></ul>
+    <div class="two eq"><select id="phcls"><option value="sedan">Black Sedan</option><option value="suv">Black SUV</option></select><select id="phpay">${Object.entries(PAYMENTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+    <input id="phnote" placeholder="Note for driver (optional)" maxlength="120"><div id="phq" class="fine"></div><button class="btn gold" id="phgo" disabled>Book &amp; send to queue</button><div id="phok"></div></form></details>
+  <div class="lbl">${ic('flag')}Queues · JFK, LGA and zones (first in line first)</div><div id="zq" class="zq"></div>
   <div class="lbl">${ic('car')}Drivers · location freshness</div><div id="dfresh" class="dfresh"></div>
   <div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
   <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Driver review</h3><div id="rev"><p class="muted">Loading…</p></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  // Phone bookings have no rider app, so this dispatch device runs the cascade: queue head for airport pickups, else closest car; 18 s per offer.
+  const cascade = (tid) => { const t = trips.get(tid); if (!t || !['requested', 'reassigning', 'offered'].includes(t.state) || t.driver) return;
+    const ex = t.excl || (t.excl = []), cand = avail().filter(d => !ex.includes(d.id) && d.lat != null), pz = ZONES.find(z => z.air && haversine(t.pickup, z) <= z.r);
+    const q = pz ? queueOf(cand, pz.k) : [], d = q[0] || cand.sort((a, b) => haversine(a, t.pickup) - haversine(b, t.pickup))[0];
+    if (!d) { t.state = 'requested'; t.assigned = null; t.note = 'No car free — retrying'; draw(); return setTimeout(() => cascade(tid), 10000); }
+    ex.push(d.id); t.state = 'offered'; t.offerTo = d.id; t.note = null; assignTo(tid, d.id); t.offerAt = Date.now(); const at = t.offerAt;
+    setTimeout(() => { const x = trips.get(tid); if (x && x.state === 'offered' && x.offerAt === at) { (x.declines ||= []).push(`${d.name}: no answer`); cascade(tid); } }, 18000); };
+  phoneBooking((pt) => { trips.set(pt.id, { id: pt.id, full: pt, phone: true, pickup: pt.pickup, pay: pt.pay, rider: pt.rider.name + ' (phone)', to: pt.dest.label.split(',')[0], fare: pt.fare, ts: pt.ts, state: 'requested' }); draw(); cascade(pt.id); });
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
   if (SANDBOX) { $('#rev').innerHTML = '<p class="muted">Sandbox: driver review and server bookings need a real dispatcher login.</p>'; $('#sbk').innerHTML = ''; } else   import('./cloud.js').then(c => c.mountReview($('#rev')).then(f => every(() => document.contains($('#rev')) && f(), 60000))).catch(e => { if ($('#rev')) $('#rev').innerHTML = '<p class="muted">Review list unavailable.</p>'; });
   if (!SANDBOX) import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
@@ -954,7 +1015,7 @@ function admin() {
     const av = avail();
     if ($('#open')) {
       $('#open').innerHTML = shown.length ? shown.map(t => { const canAssign = qtab !== 'ontrip' && open.includes(t);
-        return `<div class="card assign ${!t.assigned && now - t.ts > 180000 ? 'late' : ''}" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}<div class="muted">${t.ref ? `<span class="ds-badge flat" title="First ride from a referral link">Referred · ${esc(t.ref)}</span> ` : ''}${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
+        return `<div class="card assign ${!t.assigned && now - t.ts > 180000 ? 'late' : ''}" data-t="${esc(t.id)}" draggable="false"><div class="qrow"><div class="grow"><b>${esc(t.rider)}</b> → ${esc(t.to)}${t.state === 'offered' && t.offerAt ? ` <span class="ds-badge flat ocd">offer ${Math.max(0, 18 - Math.round((now - t.offerAt) / 1000))}s · ${esc(t.assigned || '')}</span>` : ''}${t.note ? ` <span class="ds-badge flat">${esc(t.note)}</span>` : ''}${t.declines?.length ? `<div class="fine dcl">Passed: ${t.declines.map(esc).join(' · ')}</div>` : ''}<div class="muted">${t.ref ? `<span class="ds-badge flat" title="First ride from a referral link">Referred · ${esc(t.ref)}</span> ` : ''}${esc(t.state)}${t.assigned ? ' · assigned to ' + esc(t.assigned) : ''}${t.driver ? ' · ' + esc(t.driver) : ''} · waiting ${ago(now - t.ts).replace(' ago', '')}</div></div><div class="qfare">${money(t.fare || 0)}<span class="fine">${PAYMENTS[t.pay || 'cash']}</span></div></div>
         ${canAssign ? `<div class="drvs">${av.length ? av.map(d => ({ d, e: etaOf(d, t.pickup) })).sort((a, b) => a.e - b.e).slice(0, 3).map(({ d, e }, k) => `<button class="btn assignb" data-a="${esc(d.id)}"><span class="ell">Assign ${esc(d.name)}</span><b>${fmtMin(e)}</b>${k ? '' : '<small>nearest</small>'}</button>`).join('') : '<span class="muted">' + ic('alert', 'sm') + ' No available drivers online</span>'}</div>` : ''}</div>`; }).join('') : `<p class="muted">${{ new: 'No riders waiting.', assigned: 'Nothing assigned right now.', ontrip: 'No rides in progress.' }[qtab]}</p>`;
       $('#open').querySelectorAll('[data-a]').forEach(b => b.onclick = () => assignTo(b.closest('[data-t]').dataset.t, b.dataset.a));
       // drag-to-assign: drag a waiting ride onto a driver row, or a driver row onto a ride
@@ -968,6 +1029,8 @@ function admin() {
       r.ondragover = (e) => { e.preventDefault(); r.classList.add('drop'); }; r.ondragleave = () => r.classList.remove('drop');
       r.ondrop = (e) => { e.preventDefault(); r.classList.remove('drop'); const v = e.dataTransfer.getData('text/plain'); if (v.startsWith('t:')) assignTo(v.slice(2), d.id); }; });
     $('#rp') && ($('#rp').innerHTML = reports.map(r => `<div class="card hist rep"><div><b>${ic('alert')} ${r.kind === 'driver_no_show' ? 'Driver no-show' : 'Trip problem'}${r.reason ? ' · ' + esc(r.reason.replace('_', ' ')) : ''}${r.fare ? ' · ' + money(r.fare) : ''}</b><div class="muted">${esc(r.rider)} · ${esc(r.driver)} ${esc(r.plate)} · ${new Date(r.at).toLocaleTimeString()}</div></div><span class="muted">#${esc(r.id)}</span></div>`).join(''));
+    if ($('#zq')) { const live = [...drivers.values()]; const zs = ZONES.map(z => [z, queueOf(live, z.k, now)]).filter(([z, q]) => q.length || z.air);
+      $('#zq').innerHTML = zs.map(([z, q]) => `<div class="row" data-zone="${esc(z.k)}"><span><b>${esc(z.k)}</b>${z.air ? ' ' + ic('plane', 'sm') : ''}</span><span class="muted">${q.length ? q.map((d, i) => `${i + 1}. ${esc(d.name)}`).join(' · ') : 'no cars waiting'}</span></div>`).join(''); }
     $('#tl') && ($('#tl').innerHTML = list.map(t => `<div class="card hist"><div><b>${esc(t.rider)} → ${esc(t.to)}</b><div class="muted">${esc(t.state)}${t.driver ? ' · ' + esc(t.driver) : ''} · ${new Date(t.ts).toLocaleTimeString()}</div></div><b>${money(t.fare || 0)}</b></div>`).join(''));
   };
   vsub('drivers/+', (d, _t, v) => { if (!isSim(d) && !(v?.staff && STAFF.includes(v.role))) return rejected('presence', d);
@@ -982,7 +1045,9 @@ function admin() {
     }
     if (m.type === 'request' && !trips.has(id)) trips.set(id, { ref: m.trip.ref || null, id, full: m.trip, pickup: m.trip.pickup, pay: m.trip.pay, rider: m.trip.rider.name, to: m.trip.dest.label.split(',')[0], fare: m.trip.fare, ts: m.trip.ts, state: m.trip.scheduledFor ? 'scheduled, dispatching' : 'requested' });
     const t = trips.get(id); if (!t) return;
-    const st = { accept: 'driver en route', arrived: 'driver arrived', start: 'in trip', complete: 'completed', cancel: m.reason === 'driver_no_show' ? 'cancelled — driver no-show' : m.by === 'driver' ? 'reassigning' : 'cancelled', reassign: 'reassigning', request: t.state === 'reassigning' ? 'requested' : null }[m.type];
+    const st = { accept: 'driver en route', arrived: 'driver arrived', start: 'in trip', complete: 'completed', cancel: m.reason === 'driver_no_show' ? 'cancelled — driver no-show' : m.reason === 'rider_no_show' ? 'cancelled — rider no-show' : m.by === 'driver' ? 'reassigning' : 'cancelled', reassign: 'reassigning', request: t.state === 'reassigning' ? 'requested' : null }[m.type];
+    if (m.type === 'decline') { const dn = drivers.get(m.driver)?.name || 'Driver'; (t.declines ||= []).push(`${dn}: ${{ busy: 'busy', not_wav: 'not wheelchair-accessible', heading_home: 'heading home' }[m.why] || 'declined'}`); if (t.phone && t.state === 'offered' && m.driver === t.offerTo) { cascade(id); return; } }
+    if (t.phone && m.type === 'cancel' && m.by === 'driver' && m.reason !== 'rider_no_show') { t.driver = null; t.state = 'reassigning'; setTimeout(() => cascade(id), 500); }
     if (st) t.state = st; if (m.type === 'accept') { t.driver = m.driver.name; t.assigned = null; } if (m.type === 'complete') { t.fare = m.fare; earned += m.fare; } draw();
   });
   every(draw, 5000);

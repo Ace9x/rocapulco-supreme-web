@@ -225,3 +225,5 @@ h1 span{font-style:italic}.lbl,h3{letter-spacing:.12em}
 .fshift ol{padding-left:20px;margin:8px 0}.fshift li{margin:4px 0}.card.assign.late{border-color:#ff8a80;box-shadow:0 0 0 1px rgb(255 138 128/.4)}
 .demoban{position:fixed;top:0;left:0;right:0;z-index:9999;background:#f0b35a;color:#0B0B0C;text-align:center;font:600 13px/1.4 Inter,system-ui;padding:6px 10px}.demoban a{color:#0B0B0C;text-decoration:underline}
 .net a{color:inherit;text-decoration:underline}.locask{margin:8px 0}
+.phb form{display:flex;flex-direction:column;gap:8px;margin-top:8px}.phb select{padding:10px;border-radius:10px;background:#141416;color:#F5F5F4;border:1px solid #3a3a3f}
+.zq .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgb(156 163 175/.15)}.wait.over{color:#f0b35a}.dq{margin:8px 0}
