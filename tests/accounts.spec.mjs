@@ -13,17 +13,17 @@ for (const [tag, vp] of Object.entries(VIEWS)) {
     await p.goto(BASE + '#/'); await expect(p.locator('#go-rider')).toBeVisible();
     expect(await p.locator('a[href*="driver"]:not([href^="driver/join"]), a[href*="#/admin"], a[href*="dispatch/"], #go-driver').count()).toBe(0);
     await expect(p.locator('nav.tabs')).toHaveCount(0); await p.screenshot({ path: OUT + `${tag}-rider-home.png` });
-    await p.goto(BASE + '#/rider'); await expect(p.locator('#og')).toHaveCount(1); await expect(p.locator('#og')).toBeHidden(); await expect(p.locator('#oa')).toBeHidden(); // providers off on the server today
+    await p.goto(BASE + '#/rider'); await p.click('#acctd summary'); await expect(p.locator('#og')).toHaveCount(1); await expect(p.locator('#og')).toBeHidden(); await expect(p.locator('#oa')).toBeHidden(); // providers off on the server today
     // with Google enabled on the server, the button shows and starts the Supabase OAuth redirect back to this site
     const ctx2 = await browser.newContext({ viewport: vp }); const q = await ctx2.newPage(); await q.addInitScript(() => localStorage.setItem('qc_onboarded', 'true'));
     await q.route('**/auth/v1/settings', r => r.fulfill({ json: { external: { google: true, apple: false, email: true } } }));
-    await q.goto(BASE + '#/rider'); await expect(q.locator('#og')).toBeVisible(); await expect(q.locator('#oa')).toBeHidden(); await expect(q.locator('#pf input[name=phone]')).toBeVisible();
+    await q.goto(BASE + '#/rider'); await expect(q.locator('#gphone')).toBeVisible(); await q.click('#acctd summary'); await expect(q.locator('#og')).toBeVisible(); await expect(q.locator('#oa')).toBeHidden();
     await q.screenshot({ path: OUT + `${tag}-rider-account-google.png`, fullPage: true });
     const [req] = await Promise.all([q.waitForRequest(r => /\/auth\/v1\/authorize\?provider=google/.test(r.url()), { timeout: 10000 }), q.click('#og')]);
     expect(decodeURIComponent(req.url())).toContain('redirect_to=' + BASE);
     // apple button too (hidden until enabled)
     const ctx3 = await browser.newContext({ viewport: vp }); const a = await ctx3.newPage(); await a.addInitScript(() => localStorage.setItem('qc_onboarded', 'true'));
-    await a.route('**/auth/v1/settings', r => r.fulfill({ json: { external: { google: true, apple: true } } })); await a.goto(BASE + '#/rider'); await expect(a.locator('#oa')).toBeVisible(); await a.screenshot({ path: OUT + `${tag}-rider-account-google-apple.png`, fullPage: true });
+    await a.route('**/auth/v1/settings', r => r.fulfill({ json: { external: { google: true, apple: true } } })); await a.goto(BASE + '#/rider'); await a.click('#acctd summary'); await expect(a.locator('#oa')).toBeVisible(); await a.screenshot({ path: OUT + `${tag}-rider-account-google-apple.png`, fullPage: true });
     // old hash links to staff screens leave the rider app
     await p.goto(BASE + '#/driver'); await expect(p).toHaveURL(/\/driver\//); await expect(p.locator('#gf')).toBeVisible();
     expect(errs).toEqual([]); await ctx.close(); await ctx2.close(); await ctx3.close(); });

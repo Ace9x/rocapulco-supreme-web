@@ -2,7 +2,7 @@
 // Riders book as guests via book_ride() (no account needed); the Dispatch Center signs in with a dispatcher account.
 // If the server is unreachable the app keeps working over the live relay bus (transport.js).
 export const SUPABASE = { url: 'https://czjwiudbasqwlwvezmaz.supabase.co', anonKey: 'sb_publishable_I9N8lydmQ1h6NQD6JT-jDQ_PQkjsBAK' };
-let _sb; export async function sb() { if (_sb) return _sb; const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2.49.4'); _sb = createClient(SUPABASE.url, SUPABASE.anonKey, { auth: { persistSession: true, storageKey: 'roca-sb-auth' } }); globalThis.ROC_SB = _sb; return _sb; }
+let _sb; export async function sb() { if (_sb) return _sb; const { createClient } = await import('./vendor/supabase.js'); _sb = createClient(SUPABASE.url, SUPABASE.anonKey, { auth: { persistSession: true, storageKey: 'roca-sb-auth' } }); globalThis.ROC_SB = _sb; return _sb; }
 const must = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
 const flat = d => /jfk|kennedy/i.test(d || '') ? 'JFK' : /laguardia|lga/i.test(d || '') ? 'LGA' : null;
 export async function bookRide(t) { const c = await sb(); const r = must(await c.rpc('book_ride', { p: { ext_id: t.id, rider_name: t.rider?.name, rider_phone: t.rider?.phone, pickup_address: t.pickup?.name || t.pickup?.label || t.pickup?.address || 'Pickup', pickup_lat: t.pickup?.lat, pickup_lng: t.pickup?.lng,
@@ -35,7 +35,7 @@ export async function mountDispatch(el) { const c = await sb(); let unsub = null
     const paintInv = iv => { const out = el.querySelector('#invOut'); if (!out || !iv) return; const role = iv.role;
         out.innerHTML = `<div class="invbox" data-code="${esc(iv.code)}"><p>${role === 'driver' ? 'Driver' : 'Dispatcher'} invite code <b class="code">${esc(iv.code)}</b> · expires ${new Date(iv.expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' })}</p>
           <img id="invQR" alt="Invite QR code" width="160" height="160" style="background:#fff;border-radius:8px"><input readonly id="invLink" value="${esc(iv.link)}"><div class="two eq"><button class="btn" id="invCopy">Copy link</button>${navigator.share ? '<button class="btn alt" id="invShare">Share</button>' : ''}</div></div>`;
-        import('https://esm.sh/qrcode@1.5.4').then(q => q.toDataURL(iv.link, { margin: 1, width: 320 })).then(u => { const i = el.querySelector('#invQR'); if (i) i.src = u; }).catch(() => el.querySelector('#invQR')?.remove());
+        import('./vendor/qrcode.js').then(({ default: qr }) => { const q = qr(0, 'M'); q.addData(iv.link); q.make(); return q.createDataURL(8, 2); }).then(u => { const i = el.querySelector('#invQR'); if (i) i.src = u; }).catch(() => el.querySelector('#invQR')?.remove());
         el.querySelector('#invCopy').onclick = () => navigator.clipboard?.writeText(iv.link).then(() => el.querySelector('#invCopy').textContent = 'Copied');
         el.querySelector('#invShare')?.addEventListener('click', () => navigator.share({ title: 'Join Rocapulco', text: 'Your Rocapulco invite', url: iv.link }).catch(() => {}));
       };
