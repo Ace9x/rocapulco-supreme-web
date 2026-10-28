@@ -1,4 +1,5 @@
 import { passengerHours } from './hours.js';
+import { ORS_KEY } from './fare.js';
 import { estimateFare, ratesFor, money, offerEconomics, split, DRIVER_SHARE, DISPATCH_PHONE, DISPATCH_TEL, PAYMENTS, TLC_BASE, POPULAR } from './fare.js';
 import { rankDrivers, haversine, cumulative, pointAlong, nearestIndex, instruction, rankByRoad, homeFilterOk, cancelStatus, noShowAllowed, scheduleState, smooth } from './dispatch.js';
 import { createBus } from './data.js';
@@ -89,7 +90,7 @@ const rejected = (why, m) => { (globalThis.__qcRejected ||= []).push({ why, type
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([QUEENS.lat, QUEENS.lng], 13);
 // vector tiles via map.js
-void ('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a>' });
+void ('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Routing <a href="https://openrouteservice.org">openrouteservice</a> / <a href="https://valhalla.openstreetmap.de">Valhalla (FOSSGIS)</a> · Search <a href="https://photon.komoot.io">Photon</a>' });
 const layer = L.layerGroup().addTo(map);
 const icon = (html, cls = '') => L.divIcon({ html, className: 'mk ' + cls, iconSize: [34, 34], iconAnchor: [17, 17] });
 const carIcon = (d) => icon('🚘', d && d.sim ? 'sim' : '');
@@ -101,7 +102,7 @@ const RC = new Map(), rkey = (a, b) => [a.lat, a.lng, b.lat, b.lng].map(v => v.t
 function decode6(str) { let i = 0, lat = 0, lng = 0; const out = []; while (i < str.length) { for (const k of [0, 1]) { let r = 0, sh = 0, c; do { c = str.charCodeAt(i++) - 63; r |= (c & 31) << sh; sh += 5; } while (c >= 32); const d = r & 1 ? ~(r >> 1) : r >> 1; if (k) lng += d; else lat += d; } out.push([lng / 1e6, lat / 1e6]); } return out; }
 async function valhalla(a, b) {
   const q = { locations: [{ lat: a.lat, lon: a.lng }, { lat: b.lat, lon: b.lng }], costing: 'auto', units: 'kilometers' };
-  const j = await (await fetch('https://valhalla1.openstreetmap.de/route?json=' + encodeURIComponent(JSON.stringify(q)), { signal: AbortSignal.timeout(8000) })).json();
+  const j = await (await fetch('https://valhalla1.openstreetmap.de/route?json=' + encodeURIComponent(JSON.stringify(q)), { signal: AbortSignal.timeout(8000), headers: { 'X-Client-Id': 'rocapulco-supreme-web' } })).json();
   const leg = j.trip.legs[0], coords = decode6(leg.shape);
   const steps = leg.maneuvers.map(m => ({ text: m.instruction, loc: { lat: coords[m.begin_shape_index][1], lng: coords[m.begin_shape_index][0] }, dist: m.length * 1000 }));
   return pack(coords, j.trip.summary.length * 1000, j.trip.summary.time, steps, true);
@@ -110,18 +111,23 @@ async function route(a, b) {
   const k = rkey(a, b), hit = RC.get(k); if (hit && Date.now() - hit.t < 3600e3) return hit.r;
   const r = await route0(a, b); if (r.real) { RC.set(k, { t: Date.now(), r }); if (RC.size > 200) RC.delete(RC.keys().next().value); } return r;
 }
+// Routing providers, in order. OSRM's public demo server is not used (its policy forbids production use).
+// 1) openrouteservice (HeiGIT) — free Standard plan allows commercial use (2,000 routes/day). Needs Fan's free key in fare.js ORS_KEY.
+// 2) FOSSGIS Valhalla — interim only: identified with X-Client-Id and throttled to 1 request/second per device.
+// 3) straight-line estimate, clearly labeled approximate.
+async function ors(a, b) {
+  const r = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', { method: 'POST', signal: AbortSignal.timeout(8000),
+    headers: { Authorization: ORS_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ coordinates: [[a.lng, a.lat], [b.lng, b.lat]], instructions: true }) });
+  if (!r.ok) throw 0; const f = (await r.json()).features[0], coords = f.geometry.coordinates, seg = f.properties.segments[0];
+  const steps = seg.steps.map(st => ({ text: st.instruction, loc: { lat: coords[st.way_points[0]][1], lng: coords[st.way_points[0]][0] }, dist: st.distance }));
+  return pack(coords, f.properties.summary.distance, f.properties.summary.duration, steps, true);
+}
+let vLast = 0; const vGate = async () => { const w = vLast + 1100 - Date.now(); vLast = Math.max(Date.now(), vLast + 1100); if (w > 0) await wait(w); };
 async function route0(a, b) {
-  try {
-    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson&steps=true`, { signal: AbortSignal.timeout(8000) });
-    const j = await r.json(); if (j.code !== 'Ok') throw 0;
-    const rt = j.routes[0], coords = rt.geometry.coordinates;
-    const steps = rt.legs[0].steps.map(s => ({ text: instruction(s), loc: { lat: s.maneuver.location[1], lng: s.maneuver.location[0] }, dist: s.distance }));
-    return pack(coords, rt.distance, rt.duration, steps, true);
-  } catch {
-    try { return await valhalla(a, b); } catch {}
-    const coords = [[a.lng, a.lat], [b.lng, b.lat]], d = haversine(a, b) * 1.3;
-    return pack(coords, d, d / 7, [{ text: 'Head toward destination (approximate — routing unavailable)', loc: a }, { text: 'Arrive at destination', loc: b }], false);
-  }
+  if (ORS_KEY) try { return await ors(a, b); } catch {}
+  try { await vGate(); return await valhalla(a, b); } catch {}
+  const coords = [[a.lng, a.lat], [b.lng, b.lat]], d = haversine(a, b) * 1.3;
+  return pack(coords, d, d / 7, [{ text: 'Head toward destination (approximate — routing unavailable)', loc: a }, { text: 'Arrive at destination', loc: b }], false);
 }
 function pack(coords, distance, duration, steps, real) {
   const cum = cumulative(coords);
@@ -182,14 +188,12 @@ function animateTo(marker, to, ms) {
   const stepf = (t) => { const k = Math.min(1, (t - t0) / ms), e = k; marker.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]); if (k < 1) marker._raf = requestAnimationFrame(stepf); };
   marker._raf = requestAnimationFrame(stepf);
 }
-// Road travel time from each driver to the pickup via the OSRM table service (one request for all candidates).
+// Road travel time from each driver to the pickup: one openrouteservice matrix call when a key is set; otherwise null (callers fall back to distance).
 async function roadTimes(cands, pickup) {
-  try {
-    const pts = [pickup, ...cands].map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-    const src = cands.map((_, i) => i + 1).join(';');
-    const j = await (await fetch(`https://router.project-osrm.org/table/v1/driving/${pts}?sources=${src}&destinations=0`)).json();
-    if (j.code !== 'Ok') throw 0; return j.durations.map(r => r[0]);
-  } catch { return null; }
+  if (!ORS_KEY || !cands.length) return null;
+  try { const r = await fetch('https://api.openrouteservice.org/v2/matrix/driving-car', { method: 'POST', signal: AbortSignal.timeout(6000), headers: { Authorization: ORS_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locations: [[pickup.lng, pickup.lat], ...cands.map(p => [p.lng, p.lat])], sources: cands.map((_, i) => i + 1), destinations: [0], metrics: ['duration'] }) });
+    if (!r.ok) throw 0; return (await r.json()).durations.map(x => x[0]); } catch { return null; }
 }
 function notify(text) {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.appendChild(t); setTimeout(() => t.remove(), 6000);

@@ -65,7 +65,7 @@
     constructor(id) {
       this.q = []; this.loaded = false; this.h = {};
       this.gl = new maplibregl.Map({ container: id, style: STYLE, center: [-73.7551, 40.6054], zoom: 13, attributionControl: false, pixelRatio: Math.max(2, devicePixelRatio || 1), maxPitch: 70, fadeDuration: 150 });
-      this.gl.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Routing <a href="https://project-osrm.org">OSRM</a> · Search <a href="https://photon.komoot.io">Photon</a> · <a href="https://openfreemap.org">OpenFreeMap</a>' }), 'top-right');
+      this.gl.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Routing <a href="https://openrouteservice.org">openrouteservice</a> / <a href="https://valhalla.openstreetmap.de">Valhalla (FOSSGIS)</a> · <a href="https://www.openstreetmap.org/fixthemap">Report a map error</a> · Search <a href="https://photon.komoot.io">Photon</a> · <a href="https://openfreemap.org">OpenFreeMap</a>' }), 'top-right');
       this.gl.on('load', () => { this._theme(); this.loaded = true; this.q.splice(0).forEach(f => f()); document.getElementById(id).dataset.ready = '1'; document.querySelectorAll('.maplibregl-ctrl-attrib').forEach(e => e.classList.remove('maplibregl-compact-show')); });
       
       const wrap = (e) => ({ latlng: mkLL(e.lngLat), originalEvent: e.originalEvent });

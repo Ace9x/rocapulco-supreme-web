@@ -51,3 +51,4 @@ export const POPULAR = [
   { k: 'Hospital', label: "St. John's Episcopal Hospital, Far Rockaway", lat: 40.5986, lng: -73.7520 },
   { k: 'Mall', label: 'Green Acres Mall, Valley Stream', lat: 40.6620, lng: -73.7240 },
 ];
+export const ORS_KEY = ''; // Fan: free openrouteservice key (account.heigit.org, Standard plan permits commercial use). Empty = interim Valhalla + estimates.
