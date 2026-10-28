@@ -24,6 +24,10 @@ let installEvt = null; addEventListener('beforeinstallprompt', (e) => { e.preven
 // Live channels: only the production 'nyc' channel on public relays; any other ?ns= is honored only for local (on-device) test mode.
 const NS0 = (Q.get('ns') || 'nyc').replace(/[^a-z0-9-]/gi, '').slice(0, 32) || 'nyc';
 const NS = Q.get('transport') === 'local' || NS0 === 'nyc' ? NS0 : 'nyc';
+// Sandbox: try the driver / dispatch / rider apps with no login and no server. Only on-device (BroadcastChannel) and only on an sbx- channel,
+// so nothing can reach real riders, drivers, bookings or relays.
+const SANDBOX = DL.get('sandbox') === '1' && Q.get('transport') === 'local' && /^sbx/.test(NS);
+const sandboxUrl = (path) => new URL(path + `?sandbox=1&transport=local&ns=${NS}&nosplash=1`, new URL('./', import.meta.url)).href;
 const SPEED = Math.min(20, Math.max(1, +Q.get('speed') || 4)); // simulation speed multiplier
 const $ = (s) => document.querySelector(s);
 const sheet = $('#sheet');
@@ -63,6 +67,7 @@ bus.publish = (topic, msg, opt = {}) => {
 const vcache = new Map();
 // -> null (unsigned / bad / stale) | { staff, role, name, kid } | { rider, tid, selfCert }
 function check(topic, m) {
+  if (SANDBOX) { const tid = topic.startsWith('trip/') ? topic.slice(5) : topic.startsWith('reports/') ? m?.trip : null; return Promise.resolve({ staff: true, role: 'dispatcher', name: 'Sandbox', kid: 'sbx:' + (m?.driver?.id || m?.id || m?.driver || 'x'), rider: true, tid, selfCert: false, sandbox: true }); }
   const g = m?.sig; if (!g?.kid) return Promise.resolve(null);
   const ck = topic + '|' + g.s; if (vcache.has(ck)) return vcache.get(ck);
   const p = (async () => {
@@ -79,6 +84,7 @@ function check(topic, m) {
 const STAFF = ['driver', 'dispatcher', 'owner'], DISPATCHERS = ['dispatcher', 'owner'];
 // Rider booking must exist on the server with the same rider key and (about) the same fare before staff trust it.
 async function bookingOk(t) {
+  if (SANDBOX) return !!t?.id;
   if (!t?.id || !t.riderPub) return false;
   const c = await import('./cloud.js');
   for (let i = 0; i < 3; i++) { const b = await c.verifyBooking(t.id).catch(() => null);
@@ -528,7 +534,7 @@ function rider() {
       trip.pinHash = await sha(trip.id + ':' + trip.pin);
       const rk = await newKeyPair(); riderKeys.set(trip.id, rk); tripPubs.set(trip.id, rk.pub); trip.riderPub = rk.pub;
       vsub('trip/' + trip.id, onTrip);
-      if (demo) { trip.demo = true; demoTrips.add(trip.id); trip.booked = Promise.resolve(false); } else trip.booked = import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; return true; }).catch(e => { console.warn('server booking failed — real drivers cannot verify this ride', e.message); return false; });
+      if (SANDBOX) trip.booked = Promise.resolve(true); else if (demo) { trip.demo = true; demoTrips.add(trip.id); trip.booked = Promise.resolve(false); } else trip.booked = import('./cloud.js').then(c => c.bookRide(trip)).then(r => { trip.serverId = r.id; return true; }).catch(e => { console.warn('server booking failed — real drivers cannot verify this ride', e.message); return false; });
       await trip.booked; store.set('draft', null); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }, { localOnly: !!trip.demo });
       dispatch('Finding your driver…');
     }
@@ -724,7 +730,7 @@ function driver() {
   profileForm('driver', (me) => {
     let online = false, status = 'offline', loc = null, simulate = store.get('simgps', false), trip = null, rt = null, phase = null, simM = 0, lastStep = null, offer = null, rerouting = false;
     let meMk, line, watchId, gpsMode = null, lastPub = null, home = store.get('home', null), homeMode = store.get('homeMode', false);
-    let docs = null; const cloudP = import('./cloud.js'); cloudP.then(c => c.myDocs()).then(d => { docs = d; if ($('#docs')) idle();
+    let docs = null; const cloudP = import('./cloud.js'); (SANDBOX ? Promise.resolve(null) : cloudP.then(c => c.myDocs())).then(d => { docs = d; if ($('#docs')) idle();
       const bad = DOCS.map(([k, n]) => [n, docState(d?.[k])]).filter(([, st]) => st[0] !== 'ok');
       const key = 'docnag_' + new Date().toDateString(); if (d && bad.length && !store.get(key)) { store.set(key, true); notify('Document reminder: ' + bad.map(([n, st]) => n + ' — ' + st[1].toLowerCase()).join('; ')); } }).catch(() => {});
     const info = () => ({ wav: !!docs?.wav, id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
@@ -794,7 +800,7 @@ function driver() {
         if (!online) { const ph = passengerHours(store.get('history_driver', [])); if (ph.blocked) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} Rest required</b><p>${esc(ph.why)}</p></div>`; return; }
           if (!store.get('loc_consent')) { $('#gate').innerHTML = `<div class="card" id="locc"><b>${ic('pin', 'sm')} Share your location while online?</b><p class="muted">While you're online, dispatch and nearby riders who book see your car's position so we can send you rides. It stops the moment you go offline.</p><div class="two eq"><button class="btn gold" id="locyes">Share and go online</button><button class="btn alt" id="locno">Not now</button></div></div>`;
             $('#locyes').onclick = () => { store.set('loc_consent', { at: new Date().toISOString() }); $('#gate').innerHTML = ''; $('#tg').click(); }; $('#locno').onclick = () => { $('#gate').innerHTML = ''; }; return; }
-          $('#tg').disabled = true; let rd = null; try { rd = await (await cloudP).driverReady(); } catch (e) { rd = { ok: false, problems: ['could not check documents: ' + e.message] }; } $('#tg') && ($('#tg').disabled = false);
+          $('#tg').disabled = true; let rd = null; try { rd = SANDBOX ? { ok: true, problems: [] } : await (await cloudP).driverReady(); } catch (e) { rd = { ok: false, problems: ['could not check documents: ' + e.message] }; } $('#tg') && ($('#tg').disabled = false);
           if (!rd.ok) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} You can't go online yet</b><ul>${rd.problems.map(x => `<li>${esc(x)}</li>`).join('')}</ul><p class="fine">Update your documents below. Dispatch reviews every change.</p></div>`; return; } }
         online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); else stopGPS(); presence(true); idle(); };
       $('#sim').onchange = (e) => { simulate = e.target.checked; store.set('simgps', simulate); if (simulate && watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; } else if (!simulate) startGPS(); };
@@ -913,8 +919,8 @@ function admin() {
   <div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
   <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Driver review</h3><div id="rev"><p class="muted">Loading…</p></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
-  import('./cloud.js').then(c => c.mountReview($('#rev')).then(f => every(() => document.contains($('#rev')) && f(), 60000))).catch(e => { if ($('#rev')) $('#rev').innerHTML = '<p class="muted">Review list unavailable.</p>'; });
-  import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
+  if (SANDBOX) { $('#rev').innerHTML = '<p class="muted">Sandbox: driver review and server bookings need a real dispatcher login.</p>'; $('#sbk').innerHTML = ''; } else   import('./cloud.js').then(c => c.mountReview($('#rev')).then(f => every(() => document.contains($('#rev')) && f(), 60000))).catch(e => { if ($('#rev')) $('#rev').innerHTML = '<p class="muted">Review list unavailable.</p>'; });
+  if (!SANDBOX) import('./cloud.js').then(c => c.mountDispatch($('#sbk'))).catch(e => { if ($('#sbk')) $('#sbk').innerHTML = '<p class="muted">Server offline — live relay view above still works.</p>'; });
   let earned = 0; const rmk = new Map();
   const ridePin = (t) => icon(`<b>${esc(initials(t.rider))}</b><span class="rp-f">${money(t.fare || 0).replace('.00', '')}</span>`, 'pin a ride');
   cleanup.push(() => rmk.forEach(m => m.remove()));
@@ -986,6 +992,7 @@ let staff = null; // set by the staff gate in the driver / dispatch apps
 async function router() { reset(); let r = location.hash.replace('#/', '').split('?')[0];
   if (APP === 'rider') { if (r === 'driver' || r === 'admin') { location.replace(new URL(r === 'driver' ? 'driver/' : 'dispatch/', import.meta.url).href); return; } if (r && r !== 'rider') r = ''; if (!r && DL.get('to')) r = 'rider'; }
   else { r = APP === 'driver' ? 'driver' : 'admin';
+    if (!staff && SANDBOX) { staff = { role: APP === 'driver' ? 'driver' : 'dispatcher', name: 'Sandbox', sandbox: true }; }
     if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] });
       try { signer = await c.staffSigner(); } catch (e) { sheet.innerHTML = `<h2>Secure sign-in failed</h2><p class="muted">Couldn't set up this device's signing key (${esc(e.message)}). Check your connection and reload. Dispatch: ${DISPATCH_PHONE}</p><button class="btn" id="reld">Reload</button>`; $('#reld').onclick = () => location.reload(); staff = null; return; }
       reset(); } }
@@ -1001,6 +1008,8 @@ async function router() { reset(); let r = location.hash.replace('#/', '').split
 })();
 if (APP === 'rider') { const h = document.querySelector('header'); if (h && !$('#lang')) { const b = document.createElement('button'); b.id = 'lang'; b.className = 'net langb'; b.textContent = lang() === 'es' ? 'EN' : 'ES'; b.setAttribute('aria-label', lang() === 'es' ? 'Switch to English' : 'Cambiar a español'); b.onclick = () => setLang(lang() === 'es' ? 'en' : 'es'); h.insertBefore(b, $('#net')); }
   initI18n([sheet, document.body]); }
+if (SANDBOX) { const b = document.createElement('div'); b.id = 'sbxban'; b.className = 'demoban';
+  b.innerHTML = `<b>SANDBOX</b> — test only, not connected to real rides · open <a href="${sandboxUrl('')}#/rider" target="_blank">rider</a> · <a href="${sandboxUrl('driver/')}" target="_blank">driver</a> · <a href="${sandboxUrl('dispatch/')}" target="_blank">dispatch</a> (same browser)`; document.body.prepend(b); }
 addEventListener('hashchange', router); splash(); router();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(new URL('sw.js', import.meta.url).href);
 window.__qc = { bus, NS, raw: rawPublish, sim: (t, m) => bus.publish(t, { ...m, _sim: SIM_SECRET }, { localOnly: true }) };

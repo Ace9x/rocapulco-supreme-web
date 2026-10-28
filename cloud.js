@@ -90,7 +90,8 @@ export function staffGate(sheet, { app, allowed }) { const T = app === 'driver' 
         <form id="gf" novalidate>${mode === 'up' ? `<input name="code" required placeholder="Invite code" autocomplete="off" value="${esc(inv)}"><input name="name" required placeholder="Full name" autocomplete="name">` : ''}
         <input name="email" type="email" required placeholder="Email" autocomplete="username"><input name="password" type="password" required minlength="8" placeholder="Password (8+ characters)" autocomplete="${mode === 'up' ? 'new' : 'current'}-password">
         <button class="btn gold big" id="ggo">${mode === 'up' ? 'Create staff account' : 'Sign in'}</button></form><p class="fine" id="gm">${esc(msg || '')}</p>
-        <p class="fine">Riders: <a href="${SITE}">book a ride here</a>.</p>`;
+        <p class="fine">Riders: <a href="${SITE}">book a ride here</a>.</p>
+        <p class="fine"><a id="sbxgo" href="?sandbox=1&transport=local&ns=sbx${Math.random().toString(36).slice(2, 8)}&nosplash=1">Try the sandbox</a> — no login, runs only in this browser, never touches real rides.</p>`;
       sheet.querySelector('#gin').onclick = () => { mode = 'in'; draw(); }; sheet.querySelector('#gup').onclick = () => { mode = 'up'; draw(); };
       sheet.querySelector('#gf').onsubmit = async e => { e.preventDefault(); const f = e.target, gm = sheet.querySelector('#gm'); gm.textContent = 'Working…';
         try { if (mode === 'in') { await emailSignIn(f.email.value.trim(), f.password.value); return check(); }

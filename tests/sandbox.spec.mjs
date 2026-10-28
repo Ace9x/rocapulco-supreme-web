@@ -1,0 +1,20 @@
+import { test, expect } from '@playwright/test';
+const BASE = process.env.BASE || 'http://localhost:8099/';
+test.setTimeout(240000);
+test('sandbox: no-login driver + dispatch + rider complete a ride on-device, nothing hits the server', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
+  const server = []; ctx.on('request', r => { if (/supabase\.co\/(rest|auth)/.test(r.url()) && !/auth\/v1\/settings/.test(r.url())) server.push(r.url()); });
+  const d = await ctx.newPage(); await d.goto(BASE + 'driver/'); await d.click('#sbxgo'); await expect(d.locator('#sbxban')).toBeVisible();
+  const qs = new URL(d.url()).search;
+  await d.fill('input[name=name]', 'Sandbox Driver'); await d.fill('input[name=phone]', '7185550100'); await d.fill('input[name=car]', 'Black Camry'); await d.fill('input[name=plate]', 'T000000C'); await d.click('text=Continue');
+  await d.check('#sim'); await d.click('#tg'); if (await d.locator('#locyes').isVisible().catch(() => false)) await d.click('#locyes'); await expect(d.locator('#dst')).toContainText('Online');
+  await d.screenshot({ path: '/workspace/taxi-shots/v7/sandbox-01-driver.png' });
+  const a = await ctx.newPage(); await a.goto(BASE + 'dispatch/' + qs + '#/admin'); await expect(a.locator('#qtabs')).toBeVisible(); await expect(a.locator('#dfresh')).toContainText('Sandbox Driver', { timeout: 20000 });
+  const r = await ctx.newPage(); await r.goto(BASE + qs + '#/rider'); await r.fill('#gname', 'Sandbox Rider'); await r.fill('#gphone', '7185550101');
+  await expect(r.locator('#pu')).not.toHaveValue('', { timeout: 20000 }); await r.locator('#sc [data-sc=jfk]').click(); await expect(r.locator('#fare')).toHaveText('$75.00', { timeout: 25000 });
+  await r.check('#agree'); await r.click('#req');
+  await expect(d.locator('#acc')).toBeVisible({ timeout: 30000 }); await d.screenshot({ path: '/workspace/taxi-shots/v7/sandbox-02-offer.png' }); await d.click('#acc');
+  await expect(r.locator('#st')).toContainText(/on the way/i, { timeout: 20000 }); await a.screenshot({ path: '/workspace/taxi-shots/v7/sandbox-03-dispatch.png' });
+  expect(server).toEqual([]);
+  await ctx.close();
+});
