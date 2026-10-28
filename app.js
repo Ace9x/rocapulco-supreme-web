@@ -276,7 +276,8 @@ const TERMS_V = '2026-10-22';
 const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map(b => b.toString(16).padStart(2, '0')).join('');
 const newPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, '0');
 const licRow = (k, v) => `<div class="row"><span>${k}</span><span>${v ? esc(v) : '<span class="tlc-blank" aria-label="not provided"></span>'}</span></div>`;
-const tlcLine = () => `<span class="tlc">TLC Base # ${TLC_BASE ? esc(TLC_BASE) : '<span class="tlc-blank" aria-label="to be added"></span>'}</span>`;
+// TODO(Fan): TLC base license number. Hidden everywhere until fare.js TLC_BASE is filled in.
+const tlcLine = () => TLC_BASE ? `<span class="tlc">TLC Base # ${esc(TLC_BASE)}</span> · ` : '';
 // Trust banner shown at every money moment (principle 12): exact locked price, paid once, to the driver.
 const trustBanner = (amt, pay) => `<div class="trust" id="trust" role="note">${ic('shield')}<div><b>Pay ${money(amt)} once — locked price</b><span>Paid ${esc(PAYMENTS[pay] || 'directly')} to your driver at drop-off. Never pay twice, never pay extra in cash.</span></div></div>`;
 // Tiny original route thumbnail (SVG polyline) for receipts.
@@ -317,7 +318,7 @@ function home() {
   <a class="btn big gold" href="#/rider" id="go-rider">${ic('car')}Book a ride</a>
   ${callBtn()}
   <a class="btn link drivecta" id="drivecta" href="driver/join/">${ic('car', 'sm')}Drive with us — keep 70% of every fare</a>
-  <p class="fine legal">Licensed NYC car service · ${tlcLine()} · <a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a></p>`;
+  <p class="fine legal">Licensed NYC car service · ${tlcLine()}<a href="terms.html">Terms &amp; fare policy</a> · <a href="privacy.html">Privacy</a></p>`;
   $('#fares').onclick = () => { const f = $('#faresheet'); f.hidden = !f.hidden; $('#fares').setAttribute('aria-expanded', String(!f.hidden)); };
   onboarding();
 }
@@ -431,7 +432,11 @@ function rider() {
         if (car === 'suv' || car === 'sedan') { vcls = car; store.set('vclass', car); renderClasses(); }
         const k = to.toUpperCase(), hit = k === 'JFK' ? POPULAR[0] : k === 'LGA' ? POPULAR[1] : LANDMARKS.find(l => l.k.toLowerCase() === to.toLowerCase()) || POPULAR.find(d => d.k.toLowerCase() === to.toLowerCase());
         if (hit) setDest(hit, true); else geocode(to, pickup || QUEENS).then(r => r[0] && setDest(r[0], true)).catch(() => {}); }
-      if (pickup) { $('#pu').value = pickup.label || ''; } else locate();
+      // Location only with consent: auto-locate when the browser already has permission, otherwise explain first and wait for a tap.
+      if (pickup) { $('#pu').value = pickup.label || ''; } else (navigator.permissions?.query({ name: 'geolocation' }) || Promise.reject()).then(r => r.state === 'granted' ? locate() : askLoc()).catch(askLoc);
+      function askLoc() { if (!$('#pu') || pickup) return; $('#pu').placeholder = 'Type your pickup address'; const n = document.createElement('div'); n.className = 'card locask'; n.id = 'locask';
+        n.innerHTML = `<b>${ic('locate', 'sm')} Use your location for pickup?</b><p class="fine">Rocapulco uses your precise location only to set your pickup and show nearby cars. It is shared with your driver only during your ride. We never sell it. <a href="privacy.html">Privacy</a></p><div class="two eq"><button class="btn alt" id="locok">Use my location</button><button class="btn link" id="locnx">I'll type it</button></div>`;
+        $('.routebox')?.after(n); $('#locok').onclick = () => { n.remove(); locate(); }; $('#locnx').onclick = () => n.remove(); }
       if (dest) { $('#de').value = dest.label || ''; estimate(); }
     }
     let ready = false; const syncReq = () => { if ($('#req')) $('#req').disabled = !(ready && store.get('consent')?.v === TERMS_V); };  // contact is checked on tap so the price never hides behind a form
@@ -601,7 +606,7 @@ function rider() {
               $('#tdest').textContent = r.label.split(',')[0]; $('#trustw').innerHTML = trustBanner(trip.fare, trip.pay); box.innerHTML = ''; notify('Drop-off updated · new locked price ' + money(nf.total)); }; }); $('#ede').focus(); };
         chatBox($('#chat'), $('#chatb'), trip.id, 'rider');
         if (trip.driverKid) import('./cloud.js').then(c => c.driverCard(trip.driverKid)).then(cd => { trip.card = cd; if (!cd || !$('#dcard')) return;
-          $('#dcard').innerHTML = `<div class="fine">${cd.approved ? ic('check', 'sm') + ' Documents checked by Rocapulco dispatch' : 'Driver documents pending dispatch review'}${cd.wav ? ' · Wheelchair accessible' : ''}</div>${licRow('TLC driver license #', cd.tlc_driver_license)}${licRow('TLC vehicle license #', cd.tlc_vehicle_license)}${licRow('TLC Base #', TLC_BASE)}${cd.pay_handle ? licRow(PAYMENTS[cd.pay_kind] + ' (verified)', cd.pay_handle) : ''}`; }).catch(() => {});
+          $('#dcard').innerHTML = `<div class="fine">${cd.approved ? ic('check', 'sm') + ' Documents checked by Rocapulco dispatch' : 'Driver documents pending dispatch review'}${cd.wav ? ' · Wheelchair accessible' : ''}</div>${licRow('TLC driver license #', cd.tlc_driver_license)}${licRow('TLC vehicle license #', cd.tlc_vehicle_license)}${TLC_BASE ? licRow('TLC Base #', TLC_BASE) : ''}${cd.pay_handle ? licRow(PAYMENTS[cd.pay_kind] + ' (verified)', cd.pay_handle) : ''}`; }).catch(() => {});
         $('#cx').onclick = () => { const s = cancelStatus({ matchedAt: trip.matchedAt, now: Date.now(), promisedEtaSec: trip.promised, currentEtaSec: trip.eta }); bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', late: !s.free }); import('./cloud.js').then(c => c.cancelRide(trip.id)).catch(() => {}); trip.state = 'cancelled'; carMk?.remove(); plan(); };
         $('#ns').onclick = noShow;
         tick = setInterval(() => {
@@ -652,7 +657,7 @@ function rider() {
       installCard();
       $('#fin').onclick = () => { carMk?.remove(); line?.remove(); pinD?.remove(); pinD = line = null; dest = null; trip = null; plan(); };
     }
-    function receiptText(rec) { return [`Rocapulco Supreme — receipt`, `Booking #${rec.id}`, new Date(rec.date).toLocaleString(), `From: ${rec.from}`, `To: ${rec.to}`, ...(rec.lines || []).map(l => `${l[0]}: ${money(l[1])}`), `Total (locked at booking): ${money(rec.fare)}`, `Paid with: ${PAYMENTS[rec.pay] || ''}${rec.paid ? ' — confirmed by driver' : ''}`, `Driver: ${rec.driver} · ${rec.car || ''} · plate ${rec.plate || ''}`, `TLC driver license #: ${rec.card?.tlc_driver_license || ''}`, `TLC vehicle license #: ${rec.card?.tlc_vehicle_license || ''}`, `TLC Base #: ${TLC_BASE}`, `Dispatch: ${DISPATCH_PHONE}`].join('\n'); }
+    function receiptText(rec) { return [`Rocapulco Supreme — receipt`, `Booking #${rec.id}`, new Date(rec.date).toLocaleString(), `From: ${rec.from}`, `To: ${rec.to}`, ...(rec.lines || []).map(l => `${l[0]}: ${money(l[1])}`), `Total (locked at booking): ${money(rec.fare)}`, `Paid with: ${PAYMENTS[rec.pay] || ''}${rec.paid ? ' — confirmed by driver' : ''}`, `Driver: ${rec.driver} · ${rec.car || ''} · plate ${rec.plate || ''}`, `TLC driver license #: ${rec.card?.tlc_driver_license || ''}`, `TLC vehicle license #: ${rec.card?.tlc_vehicle_license || ''}`, ...(TLC_BASE ? [`TLC Base #: ${TLC_BASE}`] : []), `Complaints: Report a problem, dispatch ${DISPATCH_PHONE}, or NYC 311 (TLC)`, `Dispatch: ${DISPATCH_PHONE}`].join('\n'); }
     // 4–5 stars: invite them to share (their referral link) and leave a public review; 1–3: open the private problem report
     function rateAct(s, rec) {
       const box = $('#rateact'); if (!box) return;
@@ -725,7 +730,10 @@ function driver() {
     const info = () => ({ wav: !!docs?.wav, id: me.id, name: me.name, car: me.car, plate: me.plate, phone: me.phone, status, lat: loc?.lat, lng: loc?.lng, rating: avgRating(), ts: Date.now() });
     const drvRef = () => 'D' + (String(me.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-7) || me.id.slice(-5).toUpperCase());
     const avgRating = () => { const r = store.get('ratings', []); return r.length ? +(r.reduce((a, b) => a + b, 0) / r.length).toFixed(2) : 5.0; };
-    const presence = (force) => { if (!loc || !(online || status === 'offline')) return;
+    // Off shift = no tracking: offline sends one "offline" message with no coordinates, and the GPS watch is stopped.
+    const stopGPS = () => { if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; } gpsMode = null; };
+    const presence = (force) => { if (!online && !trip) { if (force && lastPub?.status !== 'offline') { lastPub = { status: 'offline', ts: Date.now() }; bus.publish('drivers/' + me.id, { id: me.id, name: me.name, status: 'offline', ts: Date.now() }); } return; }
+      if (!loc) return;
       // battery/data friendly: publish only when moved >25 m, status changed, or every 15 s
       if (!force && lastPub && lastPub.status === status && haversine(lastPub, loc) < 25 && Date.now() - lastPub.ts < 15000) return;
       lastPub = { lat: loc.lat, lng: loc.lng, status, ts: Date.now() }; bus.publish('drivers/' + me.id, info()); };
@@ -754,7 +762,7 @@ function driver() {
       if (!simulate && navigator.geolocation) watchId = navigator.geolocation.watchPosition(p => { if (p.coords.accuracy > 100 && loc) return; setLoc({ lat: p.coords.latitude, lng: p.coords.longitude }); }, () => {}, want === 'high' ? { enableHighAccuracy: true, maximumAge: 2000 } : { enableHighAccuracy: false, maximumAge: 30000 });
       if (!loc) { const p = await getPos(); setLoc(p || QUEENS); map.setView(loc, 15); }
     }
-    cleanup.push(() => { if (watchId != null) navigator.geolocation.clearWatch(watchId); if (online) { status = 'offline'; presence(); } });
+    cleanup.push(() => { if (watchId != null) navigator.geolocation.clearWatch(watchId); if (online) { online = false; status = 'offline'; presence(true); } stopGPS(); });
     every(() => { if (simulate && trip && rt && (phase === 'pickup' || phase === 'trip')) { simM = Math.min(rt.distance, simM + 15 * SPEED); setLoc(pointAlong(rt.coords, rt.cum, simM)); } }, 1000);
 
     function idle() {
@@ -788,13 +796,13 @@ function driver() {
             $('#locyes').onclick = () => { store.set('loc_consent', { at: new Date().toISOString() }); $('#gate').innerHTML = ''; $('#tg').click(); }; $('#locno').onclick = () => { $('#gate').innerHTML = ''; }; return; }
           $('#tg').disabled = true; let rd = null; try { rd = await (await cloudP).driverReady(); } catch (e) { rd = { ok: false, problems: ['could not check documents: ' + e.message] }; } $('#tg') && ($('#tg').disabled = false);
           if (!rd.ok) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} You can't go online yet</b><ul>${rd.problems.map(x => `<li>${esc(x)}</li>`).join('')}</ul><p class="fine">Update your documents below. Dispatch reviews every change.</p></div>`; return; } }
-        online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); presence(true); idle(); };
+        online = !online; status = online ? 'available' : 'offline'; if (online) await startGPS(); else stopGPS(); presence(true); idle(); };
       $('#sim').onchange = (e) => { simulate = e.target.checked; store.set('simgps', simulate); if (simulate && watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; } else if (!simulate) startGPS(); };
       $('#vo').onchange = (e) => store.set('voice', e.target.checked);
       $('#hm').onchange = (e) => { if (e.target.checked && !home) { e.target.checked = false; notify('Set your home first'); return; } homeMode = e.target.checked; store.set('homeMode', homeMode); };
       $('#sethome').onclick = (e) => { e.preventDefault(); if (!loc) return notify('Waiting for GPS…'); home = { lat: loc.lat, lng: loc.lng }; store.set('home', home); notify('Home saved on this device (never shared).'); idle(); };
       $('#eh').onclick = (e) => { e.preventDefault(); const h = store.get('history_driver', []); sheet.innerHTML = `${tabs('driver')}<h2>Trip log</h2>${h.map(r => `<div class="card hist"><div><b>${esc(r.to.split(',')[0])}</b><div class="muted">${new Date(r.date).toLocaleString()} · ${esc(r.rider)}</div></div><b>${money(r.fare)}</b></div>`).join('') || '<p class="muted">No trips yet.</p>'}<button class="btn" id="bk">Back</button>`; $('#bk').onclick = idle; };
-      startGPS();
+      if (online || trip) startGPS(); else stopGPS();
     }
     const DOCS = [['dmv_exp', 'DMV driver license'], ['tlc_exp', 'TLC driver license'], ['reg_exp', 'Vehicle registration'], ['ins_exp', 'Insurance']];
     const docState = (d) => { if (!d) return ['missing', 'Missing']; const days = Math.floor((new Date(d + 'T23:59:59') - Date.now()) / 864e5); return days < 0 ? ['expired', 'Expired'] : days <= 30 ? ['soon', `Expires in ${days} day${days === 1 ? '' : 's'}`] : ['ok', 'Valid to ' + new Date(d + 'T12:00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })]; };
@@ -889,7 +897,7 @@ function driver() {
       $('#mpaid').onclick = () => { bus.publish('trip/' + done.id, { type: 'paid', driver: me.id, method: done.pay, fare: done.fare }); cloudP.then(c => c.rideEvent(done.id, 'paid', { method: done.pay })).catch(e => console.warn('ride record', e.message));
         const h2 = store.get('history_driver', []); if (h2[0]?.id === done.id) { h2[0].paid = true; store.set('history_driver', h2); } $('#mpaid').outerHTML = `<p class="nosurge" id="paidok">${ic('check')} Marked paid · ${money(done.fare)} by ${PAYMENTS[done.pay]}</p>`; };
     }
-    function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(true); startGPS(); }
+    function endTrip() { trip = null; rt = null; phase = null; line?.remove(); layer.eachLayer(l => { if (l !== meMk) l.remove(); }); status = online ? 'available' : 'offline'; presence(true); online ? startGPS() : stopGPS(); }
     idle();
   });
 }
