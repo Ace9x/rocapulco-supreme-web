@@ -481,14 +481,17 @@ function rider() {
     }
     async function locate() {
       $('#pu').placeholder = 'Locating…';
-      const p = await getPos();
-      if (!p) { $('#pu').placeholder = 'Location blocked — type your pickup'; return; }
-      setPickup(p, await reverse(p));
+      const seq = ++pickSeq; const p = await getPos();
+      if (!p) { $('#pu') && ($('#pu').placeholder = 'Location blocked — type your pickup'); return; }
+      const label = await reverse(p); if (seq !== pickSeq) return;   // the rider picked a pickup while GPS was resolving — keep theirs
+      setPickup(p, label, true, true);
     }
-    function setPickup(p, label, recenter = true) {
+    let pickSeq = 0;
+    function setPickup(p, label, recenter = true, fromGps = false) {
+      if (!fromGps) pickSeq++;
       pickup = { lat: p.lat, lng: p.lng, label, note: pickup?.note || '' }; if ($('#pu')) $('#pu').value = label;
       if (pinP) pinP.setLatLng(p); else { pinP = L.marker(p, { icon: pinA, draggable: true, zIndexOffset: 900 }).addTo(layer); pinP.on('dragend', async () => { const ll = pinP.getLatLng(); setPickup({ lat: ll.lat, lng: ll.lng }, await reverse({ lat: ll.lat, lng: ll.lng }), false); }); }
-      if (recenter) map.setView(p, 16); spawnSims(); estimate();
+      if (recenter) map.setView(p, 16); if (sims.length && haversine(sims[0], p) > 3000) stopSims(); spawnSims(); estimate();
     }
     async function setDest(p, jump) { dest = { lat: p.lat, lng: p.lng, label: p.label || await reverse(p) }; if ($('#de')) $('#de').value = dest.label; pinD ? pinD.setLatLng(p) : (pinD = L.marker(p, { icon: pinB }).addTo(layer)); await estimate(); if (jump) $('#vc')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     const onTap = (e) => { if (trip) return; setDest({ lat: e.latlng.lat, lng: e.latlng.lng }); };

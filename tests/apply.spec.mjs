@@ -20,7 +20,7 @@ test('careers page works without JS (JobPosting + OG); 3-step apply saves progre
   await a.goto(BASE + 'driver/join/apply.html'); await a.click('#next'); await expect(a.locator('#msg')).toContainText('required');
   await a.fill('#name', name); await a.fill('#phone', '718' + String(Math.floor(1e6 + Math.random() * 8e6))); await a.selectOption('#area', 'Queens'); await a.click('#next');
   await expect(a.locator('#msg')).toContainText('Saved'); await a.check('#has_tlc'); await a.fill('#tlc_license', '5512345'); await a.fill('#vehicle', '2021 Toyota Camry'); await a.fill('#fhv_plate', 't123456c');
-  await a.screenshot({ path: OUT + 'apply-03-step2.png' }); await a.click('#next');
+  await a.screenshot({ path: OUT + 'apply-03-step2.png' }); await a.click('#next'); await expect(a.locator('.steps')).toHaveAttribute('aria-label', 'Step 3 of 3');
   await a.reload(); await expect(a.locator('.steps')).toHaveAttribute('aria-label', 'Step 3 of 3');  // progress survives reload
   const sharp = await photo(a, false), blurry = await photo(a, true);
   await setFile(a, '#f-license', sharp, 'license.png'); await expect(a.locator('#m-license')).toContainText('clear', { timeout: 20000 });

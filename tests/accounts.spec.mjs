@@ -11,7 +11,7 @@ for (const [tag, vp] of Object.entries(VIEWS)) {
     const ctx = await browser.newContext({ viewport: vp }); const p = await ctx.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message));
     await p.addInitScript(() => localStorage.setItem('qc_onboarded', 'true'));
     await p.goto(BASE + '#/'); await expect(p.locator('#go-rider')).toBeVisible();
-    expect(await p.locator('a[href*="driver"], a[href*="#/admin"], a[href*="dispatch/"], #go-driver').count()).toBe(0);
+    expect(await p.locator('a[href*="driver"]:not([href^="driver/join"]), a[href*="#/admin"], a[href*="dispatch/"], #go-driver').count()).toBe(0);
     await expect(p.locator('nav.tabs')).toHaveCount(0); await p.screenshot({ path: OUT + `${tag}-rider-home.png` });
     await p.goto(BASE + '#/rider'); await expect(p.locator('#og')).toHaveCount(1); await expect(p.locator('#og')).toBeHidden(); await expect(p.locator('#oa')).toBeHidden(); // providers off on the server today
     // with Google enabled on the server, the button shows and starts the Supabase OAuth redirect back to this site

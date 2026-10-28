@@ -28,7 +28,7 @@ for (const [tag, vp, mob] of [['m', { width: 390, height: 844 }, true], ['d', { 
     await p.screenshot({ path: OUT + `${tag}-02c-landmark-quote.png` });
     await p.fill('#de', '12345 101 Ave'); await expect(p.locator('#del li').first()).toBeVisible({ timeout: 15000 });
     await p.screenshot({ path: OUT + `${tag}-02d-queens-address.png` });
-    await p.goto(u('#/rider'));
+    await p.reload(); await expect(p.locator('#pu')).not.toHaveValue(/LaGuardia|^$/, { timeout: 20000 });
     await p.locator('#sc [data-sc=jfk]').click(); await expect(p.locator('#fare')).toHaveText('$75.00', { timeout: 25000 });
     await expect(p.locator('#vc [data-v=sedan] .ds-badge.flat')).toContainText("Flat — won't change");
     await expect(p.locator('#vc [data-v=suv] .vp')).toHaveText('$112.50');

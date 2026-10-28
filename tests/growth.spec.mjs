@@ -37,7 +37,7 @@ test('driver seatback QR card encodes the referral deep link', async ({ browser 
   const ctx = await newCtx(browser, { viewport: { width: 390, height: 844 } }); const d = await ctx.newPage();
   await d.goto(appUrl(BASE, `?transport=local&ns=${ns}&nosplash=1`, '#/driver'));
   if (await d.locator('input[name=car]').isVisible({ timeout: 15000 }).catch(() => false)) { await d.fill('input[name=name]', 'QR Driver'); await d.fill('input[name=phone]', '7185550123'); await d.fill('input[name=car]', 'Black Camry'); await d.fill('input[name=plate]', 'T555555C'); await d.click('text=Continue'); }
-  await d.locator('#qrc summary').click(); await expect(d.locator('#qrbox svg')).toBeVisible();
+  await d.locator('#qrc summary').scrollIntoViewIfNeeded(); await d.locator('#qrc summary').click(); await expect(d.locator('#qrbox svg')).toBeVisible();
   expect(await d.locator('#qrbox svg').getAttribute('aria-label')).toMatch(/\?ref=D[A-Z0-9]+$/);
   await d.locator('#qrc').scrollIntoViewIfNeeded(); await d.screenshot({ path: OUT + 'growth-06-driver-qr.png' });
   await ctx.close();
