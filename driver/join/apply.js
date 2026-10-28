@@ -50,8 +50,8 @@ const bar = () => `<div class="steps" aria-label="Step ${st.step} of 3">${[1, 2,
 const inp = (id, label, type = 'text', extra = '') => `<label for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(st.f[id] || '')}" ${extra}>`;
 function statusBox() {
   if (!st.status || st.status === 'draft') return '';
-  let x = `<div class="doc" id="apst"><b>${L.status}:</b> <span>${L.st[st.status] || st.status}</span>`;
-  if (st.status === 'needs_doc') x += ` <b>${(st.needs || []).map(k => L.docs[k] || k).join(', ')}</b>${st.note ? `<p>“${esc(st.note)}”</p>` : ''}<p>${L.fix}</p>`;
+  let x = `<div class="doc" id="apst"><b>${L.status}:</b> <span>${esc(L.st[st.status] || st.status)}</span>`;
+  if (st.status === 'needs_doc') x += ` <b>${esc((st.needs || []).map(k => L.docs[k] || k).join(', '))}</b>${st.note ? `<p>“${esc(st.note)}”</p>` : ''}<p>${L.fix}</p>`;
   if (st.status === 'approved' && st.invite) { const link = new URL('../?invite=' + st.invite, location.href).href; x += `<p><a id="invlink" href="${esc(link)}">${esc(link)}</a></p>`; }
   if (st.note && st.status !== 'needs_doc') x += `<p>“${esc(st.note)}”</p>`;
   return x + `<button id="chk" type="button">${L.check}</button></div>`;

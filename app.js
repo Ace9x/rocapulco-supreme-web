@@ -9,7 +9,7 @@ import { AIRPORTS, LANDMARKS, meetNote, addressVariants, localMatches } from './
 import { initI18n, lang, setLang } from './i18n.js';
 
 // Three separate apps share this code: riders (main URL), /driver/ and /dispatch/ (set window.ROC_APP before loading).
-const APP = ['driver', 'dispatch'].includes(globalThis.ROC_APP) ? globalThis.ROC_APP : 'rider';
+const APP = ['driver', 'dispatch'].find(a => a === (globalThis.ROC_APP || document.documentElement.dataset.app)) || 'rider';
 document.body.dataset.app = APP;
 const Q = new URLSearchParams(location.search);
 // deep links: ?to=JFK&car=suv&ref=CODE work in the query or after the hash (#/rider?to=LGA)
@@ -570,7 +570,7 @@ function rider() {
         trip.state = 'accepted'; trip.driver = m.driver; trip.matchedAt = Date.now(); trip.lastLoc = Date.now(); trip.promised = null; trip.eta = null;
         carMk = L.marker([m.driver.lat, m.driver.lng], { icon: carIcon(m.driver), zIndexOffset: 1000 }).addTo(layer);
         if (trip.scheduledFor) notify(`${m.driver.name} confirmed for your scheduled ride.`);
-        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="ds-avatar">${esc(initials(m.driver.name))}</div><div class="grow"><b>${esc(m.driver.name)}</b> <span class="rt">${ic('star')}${m.driver.rating ?? '5.0'}</span><div class="muted">${esc(m.driver.car)}</div><span class="plate">${esc(m.driver.plate)}</span></div><div class="etabox"><div class="eta" id="eta">…</div><span class="fine">away</span></div></div>
+        sheet.innerHTML = `<h2 id="st">Driver is on the way</h2><div class="card drv"><div class="ds-avatar">${esc(initials(m.driver.name))}</div><div class="grow"><b>${esc(m.driver.name)}</b> <span class="rt">${ic('star')}${esc(Number(m.driver.rating ?? 5).toFixed(1))}</span><div class="muted">${esc(m.driver.car)}</div><span class="plate">${esc(m.driver.plate)}</span></div><div class="etabox"><div class="eta" id="eta">…</div><span class="fine">away</span></div></div>
         ${m.driver.sim ? '<p class="demo">DEMO: this is a simulated driver</p>' : ''}
         <div class="pinbox" id="pinbox">${ic('shield')}<div>Your ride PIN <b id="pin">${trip.pin}</b><span>Tell it to your driver before you get in. The trip can't start without it.</span></div></div>
         <div id="dcard" class="dcard"></div>
@@ -628,7 +628,7 @@ function rider() {
       bus.publish('trip/' + trip.id, { type: 'cancel', by: 'rider', reason: 'driver_no_show' });
       bus.publish('reports/' + r.id, r); store.set('reports', [r, ...store.get('reports', [])]);
       clearInterval(tick); carMk?.remove(); const t = trip; trip = null;
-      sheet.innerHTML = `<h2 id="nsdone">Sorry about that — reported</h2><div class="card"><div class="row"><span>Charge</span><b>$0.00</b></div><div class="row"><span>Driver</span><span>${esc(r.driver)} · ${esc(r.plate)}</span></div><div class="row"><span>Report #</span><span>${r.id}</span></div></div><p class="fine">No payment was ever taken, so there is nothing to refund. The report was sent to the dispatcher and saved on this device.</p><button class="btn" id="again">Find another driver now</button><button class="btn alt" id="bk">Back</button>`;
+      sheet.innerHTML = `<h2 id="nsdone">Sorry about that — reported</h2><div class="card"><div class="row"><span>Charge</span><b>$0.00</b></div><div class="row"><span>Driver</span><span>${esc(r.driver)} · ${esc(r.plate)}</span></div><div class="row"><span>Report #</span><span>${esc(r.id)}</span></div></div><p class="fine">No payment was ever taken, so there is nothing to refund. The report was sent to the dispatcher and saved on this device.</p><button class="btn" id="again">Find another driver now</button><button class="btn alt" id="bk">Back</button>`;
       $('#again').onclick = () => { trip = t; trip.driverKid = null; trip.excl.push(t.driver.id); bus.publish('trip/' + trip.id, { type: 'request', trip: pub(trip) }); dispatch('Finding you another driver…'); };
       $('#bk').onclick = plan;
     }
@@ -689,7 +689,7 @@ function rider() {
         box.innerHTML = '<p class="muted">Sending…</p>';
         let ticket = null; try { ticket = await (await import('./cloud.js')).fileComplaint(rec.id, k, r.text, rec.driver, rec.plate); r.ticket = ticket; } catch (er) { console.warn('complaint not saved on server', er.message); }
         bus.publish('reports/' + r.id, r); store.set('reports', [r, ...store.get('reports', [])]);
-        box.innerHTML = `<p class="nosurge" id="probok">${ic('check')} Sent to dispatch · ${ticket ? 'ticket <b id="ticket">' + ticket + '</b>' : 'report #' + r.id + ' (saved on this device; call dispatch if urgent)'}. A real person follows up${me.phone ? ' at ' + esc(me.phone) : ''}.</p>`; };
+        box.innerHTML = `<p class="nosurge" id="probok">${ic('check')} Sent to dispatch · ${ticket ? 'ticket <b id="ticket">' + esc(ticket) + '</b>' : 'report #' + esc(r.id) + ' (saved on this device; call dispatch if urgent)'}. A real person follows up${me.phone ? ' at ' + esc(me.phone) : ''}.</p>`; };
     }
     function tripDetail(rec) {
       sheet.innerHTML = `<div class="hi"><a href="#" id="bk3" class="back">${ic('back')}Your trips</a></div><h2>Receipt</h2>${receiptCard(rec)}<div class="two eq"><button class="btn alt" id="rdl">${ic('arrow', 'sm')}Download receipt</button><button class="btn alt" id="rsh">${ic('share', 'sm')}Share receipt</button></div><button class="btn alt" id="prob">${ic('alert')}Report a problem</button><div id="probf"></div>${callBtn()}`;
@@ -777,7 +777,7 @@ function driver() {
       $('#qrc').ontoggle = async () => { if (!$('#qrc').open || $('#qrbox').childElementCount) return; const { default: qr } = await import('./vendor/qrcode.js'); const q = qr(0, 'M'); q.addData(refLink(drvRef()) + '&nosplash=1'); q.make();
         $('#qrbox').innerHTML = q.createSvgTag({ cellSize: 5, margin: 3, scalable: true }); $('#qrbox svg').setAttribute('aria-label', 'QR code: ' + refLink(drvRef())); };
       $('#qrprint').onclick = () => { const svg = $('#qrbox').innerHTML; const w = open('', '_blank'); if (!w) return notify('Allow pop-ups to print');
-        w.document.write(`<!doctype html><title>Rocapulco QR card</title><body style="font:16px system-ui;text-align:center;padding:24px"><h1 style="font-family:Georgia,serif;margin:0">Rocapulco Supreme</h1><p>Scan to book your next ride — upfront prices, JFK $75 flat</p><div style="width:260px;margin:12px auto">${svg}</div><p><b>${esc(me.name.split(' ')[0])}</b> · ${esc(me.plate)} · code ${esc(drvRef())}</p><p>Dispatch ${DISPATCH_PHONE}</p><script>onload=()=>print()<\/script>`); w.document.close(); };
+        w.document.write(`<!doctype html><title>Rocapulco QR card</title><body style="font:16px system-ui;text-align:center;padding:24px"><h1 style="font-family:Georgia,serif;margin:0">Rocapulco Supreme</h1><p>Scan to book your next ride — upfront prices, JFK $75 flat</p><div style="width:260px;margin:12px auto">${svg}</div><p><b>${esc(me.name.split(' ')[0])}</b> · ${esc(me.plate)} · code ${esc(drvRef())}</p><p>Dispatch ${DISPATCH_PHONE}</p>`); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); };
       $('#tg').onclick = async () => {
         if (!online) { const ph = passengerHours(store.get('history_driver', [])); if (ph.blocked) { $('#gate').innerHTML = `<div class="card blocked" id="blocked"><b>${ic('alert')} Rest required</b><p>${esc(ph.why)}</p></div>`; return; }
           if (!store.get('loc_consent')) { $('#gate').innerHTML = `<div class="card" id="locc"><b>${ic('pin', 'sm')} Share your location while online?</b><p class="muted">While you're online, dispatch and nearby riders who book see your car's position so we can send you rides. It stops the moment you go offline.</p><div class="two eq"><button class="btn gold" id="locyes">Share and go online</button><button class="btn alt" id="locno">Not now</button></div></div>`;
@@ -975,7 +975,7 @@ async function router() { reset(); let r = location.hash.replace('#/', '').split
   if (APP === 'rider') { if (r === 'driver' || r === 'admin') { location.replace(new URL(r === 'driver' ? 'driver/' : 'dispatch/', import.meta.url).href); return; } if (r && r !== 'rider') r = ''; if (!r && DL.get('to')) r = 'rider'; }
   else { r = APP === 'driver' ? 'driver' : 'admin';
     if (!staff) { document.body.dataset.view = 'gate'; const c = await import('./cloud.js'); staff = await c.staffGate(sheet, { app: APP, allowed: APP === 'driver' ? ['driver', 'dispatcher', 'owner'] : ['dispatcher', 'owner'] });
-      try { signer = await c.staffSigner(); } catch (e) { sheet.innerHTML = `<h2>Secure sign-in failed</h2><p class="muted">Couldn't set up this device's signing key (${esc(e.message)}). Check your connection and reload. Dispatch: ${DISPATCH_PHONE}</p><button class="btn" onclick="location.reload()">Reload</button>`; staff = null; return; }
+      try { signer = await c.staffSigner(); } catch (e) { sheet.innerHTML = `<h2>Secure sign-in failed</h2><p class="muted">Couldn't set up this device's signing key (${esc(e.message)}). Check your connection and reload. Dispatch: ${DISPATCH_PHONE}</p><button class="btn" id="reld">Reload</button>`; $('#reld').onclick = () => location.reload(); staff = null; return; }
       reset(); } }
   document.body.dataset.view = r || 'home'; ({ rider, driver, admin }[r] || home)(); setTimeout(() => map.invalidateSize(), 50); }
 // Draggable bottom sheet on phones: peek 120px / half / full, spring-ish release.
