@@ -44,12 +44,13 @@
       m.ready(() => { if (!this._map) return; const gl = m.gl; gl.addSource(this.id, { type: 'geojson', data: this._data(), lineMetrics: true });
         gl.addLayer({ id: this.id + 'g', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': color, 'line-width': 16, 'line-blur': 10, 'line-opacity': .45 } });
         gl.addLayer({ id: this.id + 'c', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#000', 'line-width': 8 } });
-        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, color === GOLD ? '#F5D77A' : '#bfdbfe', 1, color] } });
+        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 4, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, color === GOLD ? '#F5D77A' : '#bfdbfe', 1, color] } });
+        if (color === GOLD) gl.addLayer({ id: this.id + 'i', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#F5D77A', 'line-width': 1, 'line-opacity': .8 } });
         if (color === GOLD && !matchMedia('(prefers-reduced-motion: reduce)').matches) { const t0 = performance.now(), id = this.id; const f = (t) => { const k = Math.min(1, (t - t0) / 800); if (!gl.getLayer(id)) return; gl.setPaintProperty(id, 'line-gradient', k < 1 ? ['step', ['line-progress'], ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37'], Math.max(.001, k), 'rgba(0,0,0,0)'] : ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37']); if (k < 1) requestAnimationFrame(f); }; requestAnimationFrame(f); }
         this.on = true; }); return this; }
     setLatLngs(l) { this.lls = l.map(toLL); if (this.on) this._map.gl.getSource(this.id)?.setData(this._data()); return this; }
     getBounds() { return this.lls; }
-    remove() { const m = this._map; if (m && this.on) { const gl = m.gl; ['g', 'c', ''].forEach(s => gl.getLayer(this.id + s) && gl.removeLayer(this.id + s)); gl.getSource(this.id) && gl.removeSource(this.id); }
+    remove() { const m = this._map; if (m && this.on) { const gl = m.gl; ['g', 'c', 'i', ''].forEach(s => gl.getLayer(this.id + s) && gl.removeLayer(this.id + s)); gl.getSource(this.id) && gl.removeSource(this.id); }
       this.on = false; this._map = null; this.g?.items.delete(this); return this; }
   }
 
@@ -76,10 +77,11 @@
     }
     _theme() {
       const gl = this.gl, set = (l, p, v) => gl.getLayer(l) && gl.setPaintProperty(l, p, v);
-      set('background', 'background-color', '#0b0b0d'); set('water', 'fill-color', '#0d1824'); set('landuse_park', 'fill-color', '#0f1a12');
+      set('background', 'background-color', '#0B0B0C'); set('water', 'fill-color', '#0E1418'); set('landuse_park', 'fill-color', '#0f1a12');
       ['highway_motorway_inner', 'highway_motorway_subtle'].forEach(l => set(l, 'line-color', '#5a4a1c'));
       ['highway_major_inner', 'highway_major_subtle'].forEach(l => set(l, 'line-color', '#34302a'));
-      set('highway_minor', 'line-color', '#24231f');
+      set('highway_minor', 'line-color', '#1A1A1C');
+      gl.getStyle().layers.filter(l => l.type === 'symbol' && !/poi/.test(l.id)).forEach(l => { try { gl.setPaintProperty(l.id, 'text-color', '#8A8A8E'); gl.setPaintProperty(l.id, 'text-halo-color', '#0B0B0C'); } catch {} });
       gl.getStyle().layers.filter(l => l.type === 'symbol' && /poi/.test(l.id)).forEach(l => gl.setLayoutProperty(l.id, 'visibility', 'none'));
       if (gl.getLayer('building')) gl.setLayoutProperty('building', 'visibility', 'none');
       gl.addLayer({ id: 'b3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building', minzoom: 14, paint: {

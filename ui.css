@@ -227,3 +227,46 @@ h1 span{font-style:italic}.lbl,h3{letter-spacing:.12em}
 .net a{color:inherit;text-decoration:underline}.locask{margin:8px 0}
 .phb form{display:flex;flex-direction:column;gap:8px;margin-top:8px}.phb select{padding:10px;border-radius:10px;background:#141416;color:#F5F5F4;border:1px solid #3a3a3f}
 .zq .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgb(156 163 175/.15)}.wait.over{color:#f0b35a}.dq{margin:8px 0}
+/* ===== design v2 (Rocapulco) ===== */
+@font-face{font-family:'Cormorant Garamond';font-style:normal;font-weight:600;font-display:swap;src:url(fonts/cormorant-garamond-latin-600-normal.woff2) format('woff2')}
+:root{--display:'Cormorant Garamond',Georgia,serif;--ease-out:cubic-bezier(.22,1,.36,1);--hair:rgb(156 122 30/.35)}
+[data-app=driver],[data-app=dispatch]{--display:var(--font)}
+/* 9: fare total in Cormorant, lining tabular figures */
+#fare,.price,.rcpt .tot,#phfare{font-family:var(--display);font-size:40px;line-height:1;font-variant-numeric:lining-nums tabular-nums;font-feature-settings:'lnum','tnum';letter-spacing:-.01em}
+#phfare{font-size:22px}
+#sheet h2{font-family:var(--display);font-weight:600;letter-spacing:.01em}
+[data-app=driver] #sheet h2,[data-app=dispatch] #sheet h2{font-family:var(--font)}
+/* 1: tray resizes smoothly to content */
+#sheet{transition:max-height 360ms var(--ease-out)}
+::view-transition-group(sheet){animation-duration:360ms;animation-timing-function:var(--ease-out)}
+/* 4: one gold CTA; secondary buttons are quiet text */
+.btn.link,.btn.alt.quiet{color:rgb(245 245 244/.7)}
+/* 8: arrival hairline sweep */
+#st.sweep{position:relative}
+#st.sweep::after{content:'';position:absolute;left:0;bottom:-4px;height:1px;width:100%;background:linear-gradient(90deg,transparent,#F5D77A,transparent);transform-origin:left;animation:sweep 800ms var(--ease-out) 1 both}
+@keyframes sweep{from{transform:scaleX(0);opacity:1}to{transform:scaleX(1);opacity:.0}}
+/* 10: inline validation shake, error only */
+.shake{animation:shake 160ms ease-in-out 2}
+@keyframes shake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+[aria-invalid=true]{border-color:#e5484d!important}
+/* 11: keyboard-highlighted suggestion */
+.sugg li.kb,.sugg li:hover{background:rgb(212 175 55/.12);color:#F5D77A}
+/* 12: grain at 3% */
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.03;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+/* 14: press-scale for saved places / chips */
+.ds-chip:active,#pop button:active{transform:scale(.97);transition:transform 400ms var(--ease-out)}
+/* 16: typographic receipt, printable A5 */
+.rcpt h3,.rcpt .hd{font-family:var(--display);font-size:24px}
+.rcpt{border-top:1px solid var(--hair)}
+@media print{@page{size:A5;margin:12mm}body::before,#map,header,.toast,.btn{display:none!important}.rcpt{color:#000;background:#fff;border-top:1px solid #9C7A1E}}
+/* 17: top toast, slides down 240ms, swipe up to dismiss */
+.toast{top:calc(env(safe-area-inset-top,0px) + 12px);animation:toastin 240ms var(--ease-out) both;touch-action:none;cursor:grab}
+@keyframes toastin{from{transform:translate(-50%,-140%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+/* 18: gold shimmer skeleton */
+@property --x{syntax:'<percentage>';inherits:false;initial-value:-100%}
+.skel{border-radius:12px;min-height:64px;background:linear-gradient(100deg,#141416 30%,rgb(212 175 55/.18) 50%,#141416 70%) var(--x) 0/200% 100% no-repeat,#141416;animation:shim 1.4s linear infinite}
+@keyframes shim{to{--x:200%}}
+@media (prefers-reduced-motion:reduce){.skel,.toast,#st.sweep::after,.shake{animation:none}#sheet{transition:none}}
+
+.rc-tot{font-family:var(--display);font-size:32px;font-variant-numeric:lining-nums tabular-nums}
+.rcpt{position:relative;overflow:hidden}.rcpt::after{content:'R';position:absolute;right:-6px;bottom:-34px;font-family:var(--display);font-size:150px;line-height:1;color:#D4AF37;opacity:.06;pointer-events:none}

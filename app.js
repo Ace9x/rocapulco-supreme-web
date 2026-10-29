@@ -181,11 +181,15 @@ function progress(rt, loc) {
 }
 function autocomplete(input, list, near, onPick) {
   let t;
+  list.setAttribute('role', 'listbox'); input.setAttribute('aria-autocomplete', 'list');
+  input.addEventListener('keydown', (e) => { const li = [...list.querySelectorAll('li[data-i]')]; if (!li.length) return; let i = li.findIndex(x => x.classList.contains('kb'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); li[i]?.classList.remove('kb'); i = (i + (e.key === 'ArrowDown' ? 1 : -1) + li.length) % li.length; li[i].classList.add('kb'); li[i].scrollIntoView?.({ block: 'nearest' }); input.setAttribute('aria-activedescendant', li[i].id = li[i].id || 'ac' + uid()); }
+    else if (e.key === 'Enter' && i >= 0) { e.preventDefault(); li[i].click(); } else if (e.key === 'Escape') list.innerHTML = ''; });
   input.addEventListener('input', () => {
     clearTimeout(t); const q = input.value.trim(); if (q.length < 3) { list.innerHTML = ''; return; }
     t = setTimeout(async () => {
       try { const rs = await geocode(q, near()); list.innerHTML = rs.map((r, i) => `<li data-i="${i}">${r.local ? ic('pin', 'sm') + ' ' : ''}${esc(r.label)}</li>`).join('') || '<li class="muted">No results</li>';
-        list.querySelectorAll('li[data-i]').forEach(li => li.onclick = () => { const r = rs[+li.dataset.i]; input.value = r.label; list.innerHTML = ''; onPick(r); });
+        list.querySelectorAll('li[data-i]').forEach(li => { li.setAttribute('role', 'option'); li.onclick = () => { const r = rs[+li.dataset.i]; input.value = r.label; list.innerHTML = ''; onPick(r); }; });
       } catch { list.innerHTML = '<li class="muted">Search unavailable — tap the map instead</li>'; }
     }, 450); // Photon fair use: debounce typing
   });
@@ -210,7 +214,9 @@ async function roadTimes(cands, pickup) {
     if (!r.ok) throw 0; return (await r.json()).durations.map(x => x[0]); } catch { return null; }
 }
 function notify(text) {
-  const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.appendChild(t); setTimeout(() => t.remove(), 6000);
+  const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = text; document.body.appendChild(t);
+  let y0 = null; t.addEventListener('pointerdown', e => { y0 = e.clientY; t.setPointerCapture?.(e.pointerId); }); t.addEventListener('pointermove', e => { if (y0 != null) t.style.transform = `translate(-50%, ${Math.min(0, e.clientY - y0)}px)`; });
+  t.addEventListener('pointerup', e => { if (y0 != null && e.clientY - y0 < -24) t.remove(); else t.style.transform = ''; y0 = null; }); setTimeout(() => t.remove(), 4000);
   try { if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('Rocapulco Supreme', { body: text, icon: new URL('icons/icon-192.png', import.meta.url).href }); } catch {}
 }
 // In-trip chat between rider and driver over the trip channel.
@@ -290,7 +296,7 @@ const TERMS_V = '2026-10-22';
 const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)))].map(b => b.toString(16).padStart(2, '0')).join('');
 const newPin = () => String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(4, '0');
 const licRow = (k, v) => `<div class="row"><span>${k}</span><span>${v ? esc(v) : '<span class="tlc-blank" aria-label="not provided"></span>'}</span></div>`;
-// TODO(Fan): TLC base license number. Hidden everywhere until fare.js TLC_BASE is filled in.
+// TLC base license number comes from fare.js TLC_BASE (B00639).
 const tlcLine = () => TLC_BASE ? `<span class="tlc">TLC Base # ${esc(TLC_BASE)}</span> · ` : '';
 // Trust banner shown at every money moment (principle 12): exact locked price, paid once, to the driver.
 const trustBanner = (amt, pay) => `<div class="trust" id="trust" role="note">${ic('shield')}<div><b>Pay ${money(amt)} once — locked price</b><span>Paid ${esc(PAYMENTS[pay] || 'directly')} to your driver at drop-off. Never pay twice, never pay extra in cash.</span></div></div>`;
@@ -403,6 +409,7 @@ function rider() {
       ${bh ? `<p class="fine learn" id="bh">${ic('spark')}${bh.busy ? 'Busy hour' : 'Typical hour'}: riders usually get a driver in about ${fmtMin(bh.avgWaitSec)} at this time (learned from ${bh.samples} past rides).</p>` : ''}
       <label class="tog"><input type="checkbox" id="wav" ${store.get('wav', false) ? 'checked' : ''}> ${ic('user', 'sm')} I need a wheelchair-accessible vehicle (ramp or lift)</label>
       <div id="est"></div>
+      <p class="fine" id="quotenote">Enter your destination to get an accurate, binding price quote before you book. WAV rides cost the same. <a href="terms.html#quote" target="_blank" rel="noopener">How fares work</a></p>
       <label class="tog consent"><input type="checkbox" id="agree" ${store.get('consent')?.v === TERMS_V ? 'checked' : ''}> I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms &amp; fare policy</a> and <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a></label>
       <div class="card contact" id="contact"><div class="lbl">${ic('user', 'sm')}Your name and phone — your driver texts or calls this number</div>
         <div class="two eq"><input id="gname" name="name" placeholder="Name" autocomplete="name" maxlength="60" value="${esc(me.name)}" aria-label="Your name"><input id="gphone" name="phone" type="tel" placeholder="Mobile phone" autocomplete="tel" maxlength="20" value="${esc(me.phone)}" aria-label="Your mobile phone"></div>
@@ -438,7 +445,7 @@ function rider() {
       const contact = () => { me.name = $('#gname').value.trim(); me.phone = $('#gphone').value.trim(); if (me.name && me.phone.replace(/\D/g, '').length >= 10) { const { guest, ...keep } = me; store.set('profile_rider', keep); return true; } return false; };
       ['#gname', '#gphone'].forEach(id => $(id).oninput = () => { contact(); syncReq(); });
       $('#acctd').ontoggle = () => { if ($('#acctd').open && !$('#racct').childElementCount) import('./cloud.js').then(c => c.mountRiderAccount($('#racct'), m => { if (m?.name && !$('#gname').value) { $('#gname').value = m.name; contact(); syncReq(); } })).catch(() => { $('#racct').textContent = 'Account sign-in is unavailable right now — book as a guest.'; }); };
-      $('#req').onclick = () => { if (!contact()) { notify('Add your name and a 10-digit mobile number so your driver can reach you'); $('#gname').value ? $('#gphone').focus() : $('#gname').focus(); return; } if (store.get('consent')?.v !== TERMS_V) { notify('Please agree to the Terms & Privacy policy first'); return; } $('#when').hidden ? startRequest() : schedule(); };
+      $('#req').onclick = () => { if (!contact()) { notify('Add your name and a 10-digit mobile number so your driver can reach you'); const bad = $('#gname').value ? $('#gphone') : $('#gname'); bad.focus(); bad.setAttribute('aria-invalid', 'true'); bad.classList.remove('shake'); void bad.offsetWidth; bad.classList.add('shake'); return; } if (store.get('consent')?.v !== TERMS_V) { notify('Please agree to the Terms & Privacy policy first'); const ag = $('#agree')?.closest('label') || $('#agree'); ag?.classList.remove('shake'); void ag?.offsetWidth; ag?.classList.add('shake'); return; } $('#when').hidden ? startRequest() : schedule(); };
       // deep link (?to=JFK&car=suv) lands on a priced quote; applied once per page load
       if (!plan.dl && DL.get('to')) { plan.dl = true; const to = DL.get('to').trim(), car = (DL.get('car') || '').toLowerCase();
         if (car === 'suv' || car === 'sedan') { vcls = car; store.set('vclass', car); renderClasses(); }
@@ -521,7 +528,7 @@ function rider() {
     map.on('click', onTap); map.on('contextmenu', onHold); cleanup.push(() => { map.off('click', onTap); map.off('contextmenu', onHold); });
     async function estimate() {
       if (!pickup || !dest || !$('#est')) return;
-      $('#est').innerHTML = '<p class="muted">Calculating route…</p>';
+      $('#est').innerHTML = '<div class="skel" role="status" aria-label="Calculating route…"></div>';
       rt = await route(pickup, dest); fare = estimateFare({ meters: rt.distance, seconds: rt.duration, dropoff: dest.label, vclass: vcls });
       line?.remove(); line = L.polyline(rt.latlngs, { color: '#111', weight: 5 }).addTo(layer); map.fitBounds(line.getBounds(), { padding: [40, 40], paddingBottomRight: [20, 320] });
       if (!$('#est')) return;
@@ -639,7 +646,7 @@ function rider() {
         if (trip.state === 'in_progress' && $('#eta')) $('#eta').textContent = fmtMin(m.eta);
         map.panTo([m.lat, m.lng], { animate: true });
       }
-      if (m.type === 'arrived') { const at = Date.now(); const wt = setInterval(() => { if (!trip || trip.state !== 'arrived' || !$('#st')) return clearInterval(wt); const sec = Math.floor((Date.now() - at) / 1000), left = Math.max(0, RIDER_WAIT_S - sec);
+      if (m.type === 'arrived') { const at = Date.now(); navigator.vibrate?.(20); requestAnimationFrame(() => $('#st')?.classList.add('sweep')); const wt = setInterval(() => { if (!trip || trip.state !== 'arrived' || !$('#st')) return clearInterval(wt); const sec = Math.floor((Date.now() - at) / 1000), left = Math.max(0, RIDER_WAIT_S - sec);
           $('#st').textContent = left ? `Your driver is here — free wait ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left` : 'Your driver is here — please head out now'; }, 1000); cleanup.push(() => clearInterval(wt)); trip.state = 'arrived'; $('#st').textContent = 'Your driver has arrived'; if ($('#eta')) $('#eta').textContent = 'Here'; $('#ns') && ($('#ns').hidden = true); navigator.vibrate?.(300); notify('Your driver has arrived'); }
       if (m.type === 'start') { trip.state = 'in_progress'; clearInterval(tick); $('#st').textContent = 'On the way to ' + dest.label.split(',')[0]; $('#cx')?.remove(); $('#ns')?.remove(); $('#cxs') && ($('#cxs').textContent = ''); }
       if (m.type === 'edit' && m.fare != null && trip.fare !== m.fare) Object.assign(trip, { fare: m.fare, lines: m.lines });
