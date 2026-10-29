@@ -10,7 +10,7 @@ export const SURGE_CAP = 1; // no surge, ever
 export const DRIVER_SHARE = 0.70;
 export const DISPATCH_PHONE = '(718) 474-7100', DISPATCH_TEL = '+17184747100';
 // TLC for-hire base license number: Fan to provide. Leave '' until then (shows as a blank line).
-export const TLC_BASE = '';
+export const TLC_BASE = 'B00639';
 export const PAYMENTS = { cash: 'Cash', card: 'Card', zelle: 'Zelle', venmo: 'Venmo' };
 const r2 = (n) => Math.round(n * 100) / 100;
 export function matchFlatRate(dropoff = '') {
