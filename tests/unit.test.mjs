@@ -6,7 +6,7 @@ test('Rocapulco spec: 5mi/15min = $3.50+$12.50+$6 = $22.00', () => assert.equal(
 test('airport flat rates', () => { assert.equal(estimateFare({ meters: 20000, seconds: 1800, dropoff: 'JFK Terminal 4' }).total, 75); assert.equal(estimateFare({ meters: 30000, seconds: 2400, dropoff: 'LaGuardia Airport' }).total, 82.5); });
 test('fare grows with distance and time', () => {
   const a = estimateFare({ meters: 5000, seconds: 900 }), b = estimateFare({ meters: 10000, seconds: 1500 });
-  assert.ok(b.total > a.total); assert.ok(a.low < a.total && a.high > a.total);
+  assert.ok(b.total > a.total); assert.ok(a.low === a.total && a.high === a.total && a.binding);
 });
 
 test('no surge, ever: a surge input is ignored', () => assert.equal(estimateFare({ meters: 8000, seconds: 900, surge: 3 }).total, estimateFare({ meters: 8000, seconds: 900 }).total));
