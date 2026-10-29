@@ -1006,7 +1006,7 @@ function admin() {
   <div class="lbl">${ic('flag')}Queues · JFK, LGA and zones (first in line first)</div><div id="zq" class="zq"></div>
   <div class="lbl">${ic('car')}Drivers · location freshness</div><div id="dfresh" class="dfresh"></div>
   <div class="grid three"><div class="card stat"><span>Online drivers</span><b id="nd">0</b></div><div class="card stat"><span>Active trips</span><b id="nt">0</b></div><div class="card stat"><span>Waiting riders</span><b id="nw">0</b></div></div>
-  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Driver review</h3><div id="rev"><p class="muted">Loading…</p></div><h3>TLC Reports</h3><div id="tlcr" class="card"><p class="muted">Loading…</p></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
+  <div id="rp"></div><h3>All trips</h3><div id="tl"></div><h3>Driver review</h3><div id="rev"><p class="muted">Loading…</p></div><h3>TLC records check</h3><div id="tlco"><p class="muted">Loading…</p></div><h3>TLC Reports</h3><div id="tlcr" class="card"><p class="muted">Loading…</p></div><h3>Server bookings</h3><div id="sbk"><p class="muted">Connecting to server…</p></div>${callBtn(`Dispatch line ${DISPATCH_PHONE}`)}<p class="fine">Tap a driver to assign the ride in one tap. Demo drivers shown with a dashed outline.</p>`;
   // Phone bookings have no rider app, so this dispatch device runs the cascade: queue head for airport pickups, else closest car; 18 s per offer.
   const cascade = (tid) => { const t = trips.get(tid); if (!t || !['requested', 'reassigning', 'offered'].includes(t.state) || t.driver) return;
     const ex = t.excl || (t.excl = []), cand = avail().filter(d => !ex.includes(d.id) && d.lat != null), pz = ZONES.find(z => z.air && haversine(t.pickup, z) <= z.r);
@@ -1015,6 +1015,7 @@ function admin() {
     ex.push(d.id); t.state = 'offered'; t.offerTo = d.id; t.note = null; assignTo(tid, d.id); t.offerAt = Date.now(); const at = t.offerAt;
     setTimeout(() => { const x = trips.get(tid); if (x && x.state === 'offered' && x.offerAt === at) { (x.declines ||= []).push(`${d.name}: no answer`); cascade(tid); } }, 18000); };
   tlcReportsPanel($('#tlcr'));
+  if (!SANDBOX) import('./cloud.js').then(c => c.mountOverrides($('#tlco'))).catch(() => {});
   phoneBooking((pt) => { trips.set(pt.id, { id: pt.id, full: pt, phone: true, pickup: pt.pickup, pay: pt.pay, rider: pt.rider.name + ' (phone)', to: pt.dest.label.split(',')[0], fare: pt.fare, ts: pt.ts, state: 'requested' }); draw(); cascade(pt.id); });
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
   if (SANDBOX) { $('#rev').innerHTML = '<p class="muted">Sandbox: driver review and server bookings need a real dispatcher login.</p>'; $('#sbk').innerHTML = ''; } else   import('./cloud.js').then(c => c.mountReview($('#rev')).then(f => every(() => document.contains($('#rev')) && f(), 60000))).catch(e => { if ($('#rev')) $('#rev').innerHTML = '<p class="muted">Review list unavailable.</p>'; });

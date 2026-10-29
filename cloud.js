@@ -215,3 +215,19 @@ export async function tlcReports() { const c = await sb(); return must(await c.r
 export async function tlcGenerate(start, end) { const c = await sb(); return must(await c.rpc('tlc_generate_report', { p_start: start || null, p_end: end || null })); }
 export async function tlcCsv(id) { const c = await sb(); return must(await c.rpc('tlc_report_csv', { p_id: id })); }
 export async function tlcMarkSubmitted(id, note) { const c = await sb(); return must(await c.rpc('tlc_mark_submitted', { p_id: id, p_note: note || null })); }
+// TLC records match (required before accepting rides) + owner-only override, all enforced server-side (019).
+export async function tlcDriverStatus() { const c = await sb(); return must(await c.rpc('tlc_driver_status')) || []; }
+export async function setTlcOverride(driver, reason, expires) { const c = await sb(); return must(await c.rpc('set_tlc_override', { p_driver: driver, p_reason: reason, p_expires: expires || null })); }
+export async function revokeTlcOverride(driver, reason) { const c = await sb(); return must(await c.rpc('revoke_tlc_override', { p_driver: driver, p_reason: reason })); }
+export async function mountOverrides(el) {
+  const draw = async (msg = '') => { let xs; try { xs = await tlcDriverStatus(); } catch (e) { el.innerHTML = `<p class="muted">TLC check list unavailable: ${esc(e.message)}</p>`; return; }
+    const owner = xs[0]?.is_owner;
+    el.innerHTML = `<p class="fine">Drivers must match active NYC TLC records before they can accept rides. Only the owner can override; license numbers must still be valid and expired documents still block.</p>${msg}` + (xs.length ? xs.map(d => `<div class="card rev" data-ov="${esc(d.user_id)}"><div class="qrow"><div class="grow"><b>${esc(d.name || 'Driver')}</b> ${d.tlc_match ? '<span class="dchip ok">TLC records match</span>' : '<span class="dchip bad">TLC records not matched</span>'}${d.override_active ? ` <span class="dchip warn ovb" title="${esc(d.override_reason)}">OWNER OVERRIDE${d.override_expires_at ? ' · until ' + esc(new Date(d.override_expires_at).toLocaleDateString()) : ''}</span>` : ''}
+      <div class="muted">TLC #${esc(d.tlc_driver_license || '—')} · vehicle ${esc(d.tlc_vehicle_license || '—')} · plate ${esc(d.plate || '—')}</div>${d.override_active ? `<div class="fine">Override by ${esc(d.override_by || 'owner')} on ${esc(new Date(d.override_set_at).toLocaleString())}: “${esc(d.override_reason)}”</div>` : ''}</div></div>
+      ${owner ? (d.override_active ? '<button class="btn sm ghost" data-rv>Revoke override</button>' : d.tlc_match ? '' : '<details><summary class="btn sm alt">Owner override…</summary><textarea class="ovr" maxlength="300" placeholder="Reason (required, 10+ characters)"></textarea><label class="fine">Expires (optional) <input type="date" class="ove"></label><button class="btn sm gold" data-set>Set override</button></details>') : ''}</div>`).join('') : '<p class="muted">No drivers yet.</p>');
+    el.querySelectorAll('[data-ov]').forEach(card => { const id = card.dataset.ov;
+      card.querySelector('[data-set]')?.addEventListener('click', async () => { const r = card.querySelector('.ovr').value.trim(), e = card.querySelector('.ove').value;
+        try { await setTlcOverride(id, r, e ? new Date(e + 'T23:59:59').toISOString() : null); draw('<p class="ok">Override set and logged.</p>'); } catch (er) { draw(`<p class="err">${esc(er.message)}</p>`); } });
+      card.querySelector('[data-rv]')?.addEventListener('click', async () => { const r = prompt('Why revoke this override?'); if (!r) return; try { await revokeTlcOverride(id, r); draw('<p class="ok">Override revoked and logged.</p>'); } catch (er) { draw(`<p class="err">${esc(er.message)}</p>`); } }); }); };
+  draw(); return draw;
+}
