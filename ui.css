@@ -276,3 +276,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:1;opa
 .dphoto.lg{width:84px;height:84px}
 .pickid{display:flex;gap:.8em;align-items:center;margin:.4em 0}
 .tlcl{display:flex;flex-wrap:wrap;gap:.4em;align-items:center;margin:.4em 0}
+/* owner tour */
+#otour{position:fixed;inset:0;z-index:9999}#otour .ot-hi{position:fixed;border-radius:12px;box-shadow:0 0 0 9999px rgba(0,0,0,.62);outline:3px solid #d4af37;pointer-events:none}
+#otour .ot-dim{position:fixed;inset:0;background:rgba(0,0,0,.62)}#otour .ot-box{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);width:min(420px,92vw);background:#16181d;color:#fff;border:1px solid #d4af37;border-radius:14px;padding:16px;font-size:17px;line-height:1.45}
+#otour h3{margin:4px 0 6px}#otour .ot-btn{display:flex;gap:8px;justify-content:flex-end}.card.owner{border:1px solid #d4af37}

@@ -55,7 +55,7 @@ const okEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e);
 export function validateCreds(email, password) { if (!email) return 'Enter your email address.'; if (!okEmail(email)) return 'That email doesn\'t look right (example: name@gmail.com).';
   if (!password) return 'Enter a password.'; if (password.length < 8) return 'Password must be at least 8 characters.'; return null; }
 export const niceErr = e => { const m = e?.message || String(e); return /rate limit/i.test(m) ? 'Too many sign-up emails right now. Please try again in an hour or call dispatch.' : /already registered/i.test(m) ? 'An account with this email already exists. Use Sign in.'
-  : /invalid login/i.test(m) ? 'Wrong email or password.' : /not confirmed/i.test(m) ? 'Confirm your email first (check your inbox), then sign in.' : /invite/i.test(m) ? 'That invite code is invalid, expired or already used.' : m; };
+  : /invalid login/i.test(m) ? 'Wrong email or password.' : /not confirmed/i.test(m) ? 'Confirm your email first (check your inbox), then sign in.' : /different email/i.test(m) ? 'This invite is for a different email. Sign in with the email the invite was sent to (and confirm it first).' : /invite/i.test(m) ? 'That invite code is invalid, expired or already used.' : m; };
 let _prov; export async function providers() { if (_prov) return _prov; try { const r = await fetch(SUPABASE.url + '/auth/v1/settings', { headers: { apikey: SUPABASE.anonKey } }); const j = await r.json(); _prov = { google: !!j.external?.google, apple: !!j.external?.apple }; } catch { _prov = { google: false, apple: false }; } return _prov; }
 export async function oauth(provider) { const c = await sb(); const { error } = await c.auth.signInWithOAuth({ provider, options: { redirectTo: location.href.split('#')[0].split('?')[0] + location.hash } }); if (error) throw error; }
 export async function session() { const c = await sb(); return (await c.auth.getSession()).data.session; }
@@ -88,11 +88,12 @@ export async function myInvites() { const c = await sb(); return (await c.from('
 // Staff gate for the Driver and Dispatch apps. Resolves with the profile once the signed-in user has one of `allowed` taxi roles.
 // Server-side, every staff read/write is enforced by RLS on taxi_role; this screen only decides what to show.
 export function staffGate(sheet, { app, allowed }) { const T = app === 'driver' ? 'Rocapulco Driver' : 'Rocapulco Dispatch';
-  const inv = new URLSearchParams(location.search).get('invite') || '';
+  const inv = new URLSearchParams(location.search).get('invite') || sessionStorage.getItem('roc_inv') || '';
+  if (inv) sessionStorage.setItem('roc_inv', inv);
   return new Promise(resolve => { let mode = inv ? 'up' : 'in';
     const check = async () => { const m = await me().catch(() => null); if (!m) return draw();
-      const code = new URLSearchParams(location.search).get('invite'); if (code && !allowed.includes(m.taxiRole)) { try { await redeemInvite(code); return check(); } catch (e) { return draw(niceErr(e), m); } }
-      if (allowed.includes(m.taxiRole)) return resolve(m); draw(null, m); };
+      const code = inv; if (code && !allowed.includes(m.taxiRole)) { try { await redeemInvite(code); sessionStorage.removeItem('roc_inv'); return check(); } catch (e) { return draw(niceErr(e), m); } }
+      if (allowed.includes(m.taxiRole)) { sessionStorage.removeItem('roc_inv'); return resolve(m); } draw(null, m); };
     const draw = (msg, m) => { if (m) { sheet.innerHTML = `<div class="brand"><div class="crest">R</div><h1>${T}</h1></div><div class="card" id="noaccess"><b>This app is for invited Rocapulco ${app === 'driver' ? 'drivers' : 'dispatchers'}.</b><p class="muted">You're signed in as ${esc(m.email || m.name)}${m.taxiRole === 'rider' ? ' (rider account)' : ''}. Got an invite code? Enter it below.</p>
           <form id="rdm"><input name="code" required placeholder="Invite code" autocomplete="off" value="${esc(inv)}"><button class="btn gold">Use invite</button></form><p class="fine" id="gm">${esc(msg || '')}</p>
           <a class="btn alt" href="${SITE}" id="toRider">Go to the rider app</a> <button class="btn link" id="gout">Sign out</button></div>`;
@@ -102,10 +103,11 @@ export function staffGate(sheet, { app, allowed }) { const T = app === 'driver' 
         <div class="seg"><button id="gin" class="${mode === 'in' ? 'on' : ''}">Sign in</button><button id="gup" class="${mode === 'up' ? 'on' : ''}">I have an invite</button></div>
         <form id="gf" novalidate>${mode === 'up' ? `<input name="code" required placeholder="Invite code" autocomplete="off" value="${esc(inv)}"><input name="name" required placeholder="Full name" autocomplete="name">` : ''}
         <input name="email" type="email" required placeholder="Email" autocomplete="username"><input name="password" type="password" required minlength="8" placeholder="Password (8+ characters)" autocomplete="${mode === 'up' ? 'new' : 'current'}-password">
-        <button class="btn gold big" id="ggo">${mode === 'up' ? 'Create staff account' : 'Sign in'}</button></form>${mode === 'in' ? PKBTN() : ''}<p class="fine" id="gm">${esc(msg || '')}</p>
+        <button class="btn gold big" id="ggo">${mode === 'up' ? 'Create staff account' : 'Sign in'}</button></form><button class="btn oauth google" id="ggg" hidden>Continue with Google</button>${mode === 'in' ? PKBTN() : ''}<p class="fine" id="gm">${esc(msg || '')}</p>
         <p class="fine">Riders: <a href="${SITE}">book a ride here</a>.</p>
         <p class="fine"><a id="sbxgo" href="?sandbox=1&transport=local&ns=sbx${Math.random().toString(36).slice(2, 8)}&nosplash=1">Try the sandbox</a> — no login, runs only in this browser, never touches real rides.</p>`;
       { const pk = sheet.querySelector('#pkin'); if (pk) pk.onclick = async () => { const gm = sheet.querySelector('#gm'); gm.textContent = 'Waiting for your passkey…'; try { await passkeyIn(); check(); } catch (err) { gm.textContent = err.message + ' You can still sign in with email.'; } }; }
+      providers().then(p => { const g = sheet.querySelector('#ggg'); if (g && p.google) { g.hidden = false; g.onclick = () => oauth('google').catch(e => { sheet.querySelector('#gm').textContent = niceErr(e); }); } });
       sheet.querySelector('#gin').onclick = () => { mode = 'in'; draw(); }; sheet.querySelector('#gup').onclick = () => { mode = 'up'; draw(); };
       sheet.querySelector('#gf').onsubmit = async e => { e.preventDefault(); const f = e.target, gm = sheet.querySelector('#gm'); gm.textContent = 'Working…';
         try { if (mode === 'in') { await emailSignIn(f.email.value.trim(), f.password.value); return check(); }

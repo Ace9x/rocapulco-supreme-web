@@ -995,7 +995,7 @@ async function tlcReportsPanel(box) {
 function admin() {
   const drivers = new Map(), mk = new Map(), trips = new Map(), reports = [];
   let qtab = 'new';
-  sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2>
+  sheet.innerHTML = `${tabs('admin')}<h2>Dispatch Center</h2><div id="ownr"></div>
   <div class="qtabs" role="tablist" id="qtabs"><button role="tab" data-q="new" aria-selected="true">New <b id="qn">0</b></button><button role="tab" data-q="assigned" aria-selected="false">Assigned <b id="qa">0</b></button><button role="tab" data-q="ontrip" aria-selected="false">On trip <b id="qo">0</b></button></div>
   <div id="open" class="queue"></div>
   <details class="card phb" id="phb"><summary><b>${ic('phone', 'sm')} Phone booking</b> <span class="muted">caller on ${DISPATCH_PHONE}</span></summary><form id="phf" autocomplete="off">
@@ -1015,6 +1015,7 @@ function admin() {
     ex.push(d.id); t.state = 'offered'; t.offerTo = d.id; t.note = null; assignTo(tid, d.id); t.offerAt = Date.now(); const at = t.offerAt;
     setTimeout(() => { const x = trips.get(tid); if (x && x.state === 'offered' && x.offerAt === at) { (x.declines ||= []).push(`${d.name}: no answer`); cascade(tid); } }, 18000); };
   tlcReportsPanel($('#tlcr'));
+  if (!SANDBOX && staff?.taxiRole === 'owner') import('./owner.js').then(o => o.mountOwner($('#ownr'), staff)).catch(() => {});
   if (!SANDBOX) import('./cloud.js').then(c => c.mountOverrides($('#tlco'))).catch(() => {});
   phoneBooking((pt) => { trips.set(pt.id, { id: pt.id, full: pt, phone: true, pickup: pt.pickup, pay: pt.pay, rider: pt.rider.name + ' (phone)', to: pt.dest.label.split(',')[0], fare: pt.fare, ts: pt.ts, state: 'requested' }); draw(); cascade(pt.id); });
   sheet.querySelectorAll('#qtabs [data-q]').forEach(b => b.onclick = () => { qtab = b.dataset.q; sheet.querySelectorAll('#qtabs [data-q]').forEach(x => x.setAttribute('aria-selected', String(x === b))); draw(); });
