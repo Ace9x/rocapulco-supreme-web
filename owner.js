@@ -36,7 +36,7 @@ export async function mountOwner(el, m) {
   el.innerHTML = `<div class="card owner"><b>Owner · ${esc(m.name || '')}</b><div class="muted">You run Rocapulco Supreme (TLC base B00639).</div>
     <div class="two eq"><button class="btn gold" id="ownGuide">Owner guide</button><a class="btn alt" href="../owner-guide/" target="_blank" rel="noopener">Printable guide</a></div>
     <p class="fine"><a id="ownRates" href="../rates.html" target="_blank" rel="noopener">Rate schedule</a> · <span id="ownRcpt">Receipts go to riders automatically</span></p>
-    <details><summary>Invites you made (${inv.length})</summary>${inv.map(x => `<div class="fine">${esc(x.role)} · ${esc(x.code)} · ${x.used_at ? 'used' : new Date(x.expires_at) < new Date() ? 'expired' : 'open until ' + new Date(x.expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' })}</div>`).join('') || '<p class="fine">None yet. Use "Invite driver" below.</p>'}</details>
+    <details><summary>Invite codes (${inv.length})</summary>${inv.map(x => `<div class="fine">${esc(x.role)} · ${esc(x.code)} · ${x.used_at ? 'used' : new Date(x.expires_at) < new Date() ? 'expired' : 'open until ' + new Date(x.expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' })}</div>`).join('') || '<p class="fine">None yet. Use "Invite driver" below.</p>'}</details>
     <div id="ownSet" class="fine">Settings: <span id="ownPk"></span> <button class="btn sm ghost" id="ownAll">Sign out everywhere</button></div></div>`;
   passkeyUI(el.querySelector('#ownPk'), 'Rocapulco').catch(() => {});
   el.querySelector('#ownGuide').onclick = () => tour(0);
