@@ -14,6 +14,19 @@ const ES = {
   'Your rider account': 'Tu cuenta', 'Full name': 'Nombre completo', 'Phone': 'Teléfono', 'Departures': 'Salidas', 'Arrivals': 'Llegadas', 'Send to dispatch': 'Enviar a despacho',
   'Fare breakdown — no hidden fees': 'Desglose de tarifa — sin cargos ocultos', 'Total you pay': 'Total a pagar', 'Base fare': 'Tarifa base', 'Minimum fare adjustment': 'Ajuste de tarifa mínima',
   'Calculating route…': 'Calculando ruta…', 'Cross street': 'Calle transversal', 'Which side / entrance': 'Lado / entrada',
+  'Drag the gold': 'Arrastra el pin dorado', 'pin to your exact spot. Tap the map to set the destination.': 'a tu lugar exacto. Toca el mapa para fijar el destino.',
+  'Black SUV is 1.5× the Sedan fare. The price you book is the price you pay — never any surge.': 'La SUV negra cuesta 1.5× la tarifa del sedán. El precio que reservas es el que pagas — nunca tarifa dinámica.',
+  'Enter your destination to get an accurate, binding price quote before you book. WAV rides cost the same.': 'Escribe tu destino para ver un precio exacto y garantizado antes de reservar. Los viajes WAV cuestan lo mismo.',
+  'I agree to the': 'Acepto los', 'Have an account? Sign in instead': '¿Tienes cuenta? Inicia sesión',
+  'Hi there': 'Hola', 'Use your location for pickup?': '¿Usar tu ubicación para la recogida?', 'Use my location': 'Usar mi ubicación', "I'll type it": 'La escribo yo', 'Privacy': 'Privacidad',
+  'Rocapulco uses your precise location only to set your pickup and show nearby cars. It is shared with your driver only during your ride. We never sell it.': 'Rocapulco usa tu ubicación exacta solo para fijar tu recogida y mostrar autos cercanos. Solo se comparte con tu conductor durante el viaje. Nunca la vendemos.',
+  'Set Hospital': 'Guardar hospital', 'Set Court': 'Guardar tribunal', 'Terminals': 'Terminales', 'Popular places — landmarks, stations, hospitals': 'Lugares populares — sitios conocidos, estaciones, hospitales',
+  'Drag the gold A pin to your exact spot. Tap the map to set the destination.': 'Arrastra el pin dorado A a tu lugar exacto. Toca el mapa para fijar el destino.',
+  'Black SUV is 1.5× the Sedan fare.': 'La SUV negra cuesta 1.5× la tarifa del sedán.', 'The price you book is the price you pay — never any surge.': 'El precio que reservas es el que pagas — nunca tarifa dinámica.',
+  'Enter your destination to get an accurate, binding price quote before you book.': 'Escribe tu destino para ver un precio exacto y garantizado antes de reservar.', 'WAV rides cost the same.': 'Los viajes WAV cuestan lo mismo.',
+  'See our rates': 'Ver tarifas', 'How fares work': 'Cómo funcionan las tarifas', 'Your name and phone — your driver texts or calls this number': 'Tu nombre y teléfono — tu conductor te escribe o llama a este número',
+  'Have an account?': '¿Tienes cuenta?', 'Sign in instead': 'Inicia sesión', 'Sign in': 'Iniciar sesión', 'Dispatch online': 'Despacho en línea', 'Licensed NYC car service': 'Servicio de autos con licencia de NYC',
+  'Note for driver (e.g. blue door, by the bodega)': 'Nota para el conductor (ej. puerta azul, junto a la bodega)',
 };
 const PAT = [
   [/^Hi (.+)$/, 'Hola $1'], [/^(\d+) min away$/, 'a $1 min'], [/^(\d+) min$/, '$1 min'], [/^Pay (\$[\d.]+) once — locked price$/, 'Paga $1 una sola vez — precio fijo'],
@@ -24,7 +37,7 @@ const PAT = [
   [/^no surge, ever\.$/, 'sin tarifa dinámica, nunca.'], [/^ flat · LGA $/, ' fijo · LGA '], [/^I agree to the $/, 'Acepto los '], [/^Terms & fare policy$/, 'Términos y política de tarifas'], [/^Privacy policy$/, 'Política de privacidad'], [/^ and $/, ' y '],
 ];
 export const lang = () => localStorage.getItem('qc_lang') === '"es"' ? 'es' : 'en';
-const tr = (t) => { const k = t.trim(); if (!k) return t; if (ES[k]) return t.replace(k, ES[k]); for (const [re, to] of PAT) if (re.test(t)) return t.replace(re, to); return t; };
+const tr = (t) => { const k = t.trim(); if (!k) return t; if (ES[k]) return t.replace(k, ES[k]); for (const [re, to] of PAT) { if (re.test(t)) return t.replace(re, to); if (k !== t && re.test(k)) return t.replace(k, k.replace(re, to)); } return t; };
 function walk(root) {
   const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) { const v = tr(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
   root.querySelectorAll?.('[placeholder],[aria-label]').forEach(e => { for (const a of ['placeholder', 'aria-label']) { const v = e.getAttribute(a); if (v && tr(v) !== v) e.setAttribute(a, tr(v)); } });
