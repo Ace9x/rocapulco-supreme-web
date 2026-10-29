@@ -270,3 +270,9 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:1;opa
 
 .rc-tot{font-family:var(--display);font-size:32px;font-variant-numeric:lining-nums tabular-nums}
 .rcpt{position:relative;overflow:hidden}.rcpt::after{content:'R';position:absolute;right:-6px;bottom:-34px;font-family:var(--display);font-size:150px;line-height:1;color:#D4AF37;opacity:.06;pointer-events:none}
+/* 014 verification */
+.vbadge{display:inline-flex;align-items:center;gap:.25em;padding:.15em .55em;border-radius:999px;background:rgba(46,160,67,.16);color:#3fb950;font-weight:600;font-size:.85em}
+.dphoto{width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid var(--gold,#c9a227)}
+.dphoto.lg{width:84px;height:84px}
+.pickid{display:flex;gap:.8em;align-items:center;margin:.4em 0}
+.tlcl{display:flex;flex-wrap:wrap;gap:.4em;align-items:center;margin:.4em 0}
