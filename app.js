@@ -306,7 +306,7 @@ function routeThumb(coords) {
   const xs = coords.map(c => c[0]), ys = coords.map(c => c[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), k = Math.max(x1 - x0, y1 - y0) || 1;
   const step = Math.max(1, Math.floor(coords.length / 80)), pts = coords.filter((_, i) => i % step === 0).concat([coords[coords.length - 1]]).map(c => `${(8 + (c[0] - x0) / k * 84).toFixed(1)},${(52 - (c[1] - y0) / k * 44).toFixed(1)}`);
   const [a, b] = [pts[0], pts[pts.length - 1]].map(q => q.split(','));
-  return `<svg class="thumb" viewBox="0 0 100 60" aria-label="Route map"><polyline points="${pts.join(' ')}" fill="none" stroke="url(#tg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="tg"><stop offset="0" stop-color="#F5D77A"/><stop offset="1" stop-color="#A8842A"/></linearGradient></defs><circle cx="${a[0]}" cy="${a[1]}" r="3.2" fill="#D4AF37"/><rect x="${b[0] - 3}" y="${b[1] - 3}" width="6" height="6" rx="1" fill="#fff"/></svg>`;
+  return `<svg class="thumb" viewBox="0 0 100 60" aria-label="Route map"><polyline points="${pts.join(' ')}" fill="none" stroke="url(#tg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="tg"><stop offset="0" stop-color="#7CF0B4"/><stop offset="1" stop-color="#06C167"/></linearGradient></defs><circle cx="${a[0]}" cy="${a[1]}" r="3.2" fill="#06C167"/><rect x="${b[0] - 3}" y="${b[1] - 3}" width="6" height="6" rx="1" fill="#fff"/></svg>`;
 }
 const ago = (ms) => ms < 60e3 ? Math.max(0, Math.round(ms / 1000)) + 's ago' : Math.round(ms / 60e3) + 'm ago'; // each app has a single section; riders never see driver or dispatch links
 

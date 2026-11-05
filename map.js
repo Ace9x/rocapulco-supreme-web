@@ -1,7 +1,7 @@
 // Rocapulco map engine: MapLibre GL (vector, retina, tilt) behind a tiny Leaflet-style API so app.js stays unchanged.
 (function () {
   const STYLE = 'https://tiles.openfreemap.org/styles/dark';
-  const GOLD = '#D4AF37';
+  const GOLD = '#06C167'; // Highbeam signal green (name kept: used as the route-color key)
   const R = Math.PI / 180;
   const toLL = (p) => Array.isArray(p) ? { lat: p[0], lng: p[1] } : { lat: p.lat, lng: p.lng };
   const dist = (a, b) => { const dLat = (b.lat - a.lat) * R, dLng = (b.lng - a.lng) * R; const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * R) * Math.cos(b.lat * R) * Math.sin(dLng / 2) ** 2; return 12742000 * Math.asin(Math.sqrt(h)); };
@@ -44,9 +44,9 @@
       m.ready(() => { if (!this._map) return; const gl = m.gl; gl.addSource(this.id, { type: 'geojson', data: this._data(), lineMetrics: true });
         gl.addLayer({ id: this.id + 'g', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': color, 'line-width': 16, 'line-blur': 10, 'line-opacity': .45 } });
         gl.addLayer({ id: this.id + 'c', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#000', 'line-width': 8 } });
-        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 4, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, color === GOLD ? '#F5D77A' : '#bfdbfe', 1, color] } });
-        if (color === GOLD) gl.addLayer({ id: this.id + 'i', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#F5D77A', 'line-width': 1, 'line-opacity': .8 } });
-        if (color === GOLD && !matchMedia('(prefers-reduced-motion: reduce)').matches) { const t0 = performance.now(), id = this.id; const f = (t) => { const k = Math.min(1, (t - t0) / 800); if (!gl.getLayer(id)) return; gl.setPaintProperty(id, 'line-gradient', k < 1 ? ['step', ['line-progress'], ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37'], Math.max(.001, k), 'rgba(0,0,0,0)'] : ['interpolate', ['linear'], ['line-progress'], 0, '#F5D77A', 1, '#D4AF37']); if (k < 1) requestAnimationFrame(f); }; requestAnimationFrame(f); }
+        gl.addLayer({ id: this.id, type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 4, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, color === GOLD ? '#7CF0B4' : '#bfdbfe', 1, color] } });
+        if (color === GOLD) gl.addLayer({ id: this.id + 'i', type: 'line', source: this.id, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#7CF0B4', 'line-width': 1, 'line-opacity': .8 } });
+        if (color === GOLD && !matchMedia('(prefers-reduced-motion: reduce)').matches) { const t0 = performance.now(), id = this.id; const f = (t) => { const k = Math.min(1, (t - t0) / 800); if (!gl.getLayer(id)) return; gl.setPaintProperty(id, 'line-gradient', k < 1 ? ['step', ['line-progress'], ['interpolate', ['linear'], ['line-progress'], 0, '#7CF0B4', 1, '#06C167'], Math.max(.001, k), 'rgba(0,0,0,0)'] : ['interpolate', ['linear'], ['line-progress'], 0, '#7CF0B4', 1, '#06C167']); if (k < 1) requestAnimationFrame(f); }; requestAnimationFrame(f); }
         this.on = true; }); return this; }
     setLatLngs(l) { this.lls = l.map(toLL); if (this.on) this._map.gl.getSource(this.id)?.setData(this._data()); return this; }
     getBounds() { return this.lls; }

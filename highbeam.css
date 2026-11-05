@@ -68,3 +68,6 @@ input:focus,select:focus{outline:2px solid var(--signal);outline-offset:1px}
 .legal a,.consent a,.fine a,.langb{color:#06C167!important}
 #sheet,.card{border-color:#2A2A2D!important}
 .sugg li.kb,.sugg li:hover{color:#fff!important;background:#1C1C1E}
+/* map markers: Highbeam green, black text for contrast */
+.mk.ride b{background:#06C167!important;color:#000!important;box-shadow:0 0 0 3px rgb(6 193 103/.3)!important}
+.mk.radar i,.radar-ui i{border-color:#06C167!important}.mk.radar b,.radar-ui b{background:#06C167!important;box-shadow:0 0 12px #06C167!important}
