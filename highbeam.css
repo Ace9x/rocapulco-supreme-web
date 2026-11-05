@@ -1,0 +1,52 @@
+/* Highbeam visual layer (Nov 4 2026) — night-road black, one signal green, hazard amber, big type, thumb-zone buttons.
+   Visual only: no selectors change behavior. Loaded last on rider + driver. */
+:root,[data-theme=dark]{--bg:#000;--surface:#0F0F10;--surface-2:#1C1C1E;--surface-3:#2A2A2D;--line:#2A2A2D;--text:#fff;--text-2:#A1A1A6;--text-3:#8E8E93;
+  --signal:#06C167;--signal-tint:#E7F9EF;--hazard:#FFB020;--danger:#FF453A;--info:#0A84FF;
+  --brand:#06C167;--brand-2:#06C167;--brand-ink:#000;--brand-grad:#06C167;--gold2:#fff;
+  --r-sm:12px;--r-md:20px;--r-lg:20px;--r-xl:28px;--sh-float:0 8px 24px rgba(0,0,0,.5);--sh-sheet:0 -8px 24px rgba(0,0,0,.5);
+  --fs-md:17px;--tap:52px;--ease:cubic-bezier(.2,.8,.2,1)}
+body[data-app=driver],body[data-app=dispatch]{--brand:#06C167;--brand-grad:#06C167;--gold2:#fff}
+html,body{font-family:Inter,system-ui,-apple-system,sans-serif;font-size:17px;line-height:1.45}
+h1,h2,.where,.brand h1,h1 span,.sp-word{font-family:Inter,system-ui,sans-serif!important;font-weight:800!important;letter-spacing:-.02em!important}
+.where{font-size:28px;line-height:1.1}
+h3,.lbl{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.vp,.fare,[class*=eta],.big-num{font-variant-numeric:tabular-nums}
+/* map chrome: header pills become floating white search-style pills */
+.logo,.net,.hcall{height:48px;background:#000;border:1px solid #333;box-shadow:var(--sh-float)}
+.hcall{color:#fff}
+/* single bottom sheet */
+#sheet{background:#0F0F10;border-top:0;border-radius:28px 28px 0 0;box-shadow:var(--sh-sheet);transition:transform 320ms var(--ease)}
+#sheet::before{width:40px;height:5px;border-radius:3px;background:#3A3A3C}
+/* buttons */
+.btn{border-radius:999px;min-height:52px;font-weight:700;border:0;background:#1C1C1E}
+.btn:active{transform:scale(.97);transition:transform 120ms}
+.btn.big{min-height:64px;font-size:21px}
+.btn.gold,#go-rider,#req,#acc,#tg:not(.alt),#start,#act{background:var(--signal)!important;color:#000!important;font-weight:900;box-shadow:none;min-height:64px;font-size:21px;border-radius:999px}
+.btn.call,.btn.link,.hi a,.field button,.sugg li:hover{color:#fff}
+.btn.call .ds-ic,.lbl .ds-ic,.ds-chip .ds-ic,.ds-option>.ds-ic.lg{color:var(--signal)}
+.btn.danger{background:rgb(255 69 58/.16);color:#FF6961}
+.btn.sm{min-height:44px}
+/* inputs / route box: white "Where to?" pill feel */
+.routebox{background:#1C1C1E;border:0;border-radius:20px}
+.dot.a{background:var(--signal);box-shadow:0 0 0 3px rgb(6 193 103/.25)}
+input,select{border-radius:12px;background:#1C1C1E;border-color:#2A2A2D;font-size:17px}
+input:focus,select:focus{outline:2px solid var(--signal);outline-offset:1px}
+/* chips, tabs, segmented, options */
+.pop button,.ds-chip{height:44px;border-radius:999px;background:#1C1C1E;border:0}
+.ds-chip[aria-pressed=true]{border:1px solid var(--signal);color:#fff;background:rgb(6 193 103/.14)}
+.tabs,.seg{border-radius:999px;background:#1C1C1E;border:0}
+.tabs a,.seg button{border-radius:999px;min-height:44px}
+.tabs a.on,.seg button.on{background:#fff;color:#000}
+.ds-option{border-radius:20px;border:2px solid transparent;background:#1C1C1E}
+.ds-option[aria-checked=true]{border-color:var(--signal);background:rgb(6 193 103/.08)}
+.vp{color:#fff;font-weight:800}
+.card,.bd{background:#1C1C1E;border:0;border-radius:20px}
+.trust{border-color:var(--signal);background:rgb(6 193 103/.08)}.trust .ds-ic,.trust b{color:var(--signal)}
+.crest{border-color:#fff;color:#fff;box-shadow:none}
+/* map controls as 56px FABs */
+.maplibregl-ctrl-group{background:#000!important;border:1px solid #333;border-radius:999px!important;box-shadow:var(--sh-float)!important}
+.maplibregl-ctrl-group button{width:48px!important;height:48px!important}
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon{filter:invert(1)}
+.maplibregl-popup-content{background:#fff;color:#000;border-radius:12px;font:600 15px Inter,system-ui,sans-serif}
+@media (prefers-reduced-motion:reduce){#sheet,.btn{transition:none!important}}
+.field button{width:44px;height:44px}
