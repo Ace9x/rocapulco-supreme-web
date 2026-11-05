@@ -50,3 +50,21 @@ input:focus,select:focus{outline:2px solid var(--signal);outline-offset:1px}
 .maplibregl-popup-content{background:#fff;color:#000;border-radius:12px;font:600 15px Inter,system-ui,sans-serif}
 @media (prefers-reduced-motion:reduce){#sheet,.btn{transition:none!important}}
 .field button{width:44px;height:44px}
+/* dispatch + owner (inside dispatch app) */
+.qtabs{border-radius:999px;background:#1C1C1E;border:0}
+.qtabs button,.qtabs a{border-radius:999px;min-height:44px}
+.qtabs .on,.qtabs [aria-selected=true]{background:#fff!important;color:#000!important}
+.qfare,body[data-app=driver] .price,body[data-app=dispatch] .price{color:#fff;font-variant-numeric:tabular-nums;font-weight:800}
+@media(min-width:800px){#sheet{border-radius:28px;box-shadow:var(--sh-float)}}
+/* static owner guide */
+/* replace remaining gold accents with Highbeam white/green */
+:root,body[data-app]{--gold:#06C167;--gold2:#fff}
+.car-card[aria-checked=true]{border-color:#06C167!important;background:rgb(6 193 103/.08)!important;box-shadow:none!important}
+.car-card .vp,.price,.rc-tot,.walletsum b,.qfare,.rp-f,.mk.ride b{color:#fff!important;font-family:Inter,system-ui,sans-serif!important;font-weight:800;font-variant-numeric:tabular-nums}
+.ds-badge.flat{background:#E7F9EF!important;color:#007A3D!important;border:0!important}
+.sc.air,.sc.air b{border-color:#2A2A2D!important;color:#fff!important;background:#1C1C1E!important}
+.onb-card,.shareask,.instc,.emailacct summary,.invbox .code,.walletsum{border-color:#2A2A2D!important}
+.onb-ic,.promise>.ds-ic,.pinbox .ds-ic,.promise b{color:#06C167!important}
+.legal a,.consent a,.fine a,.langb{color:#06C167!important}
+#sheet,.card{border-color:#2A2A2D!important}
+.sugg li.kb,.sugg li:hover{color:#fff!important;background:#1C1C1E}

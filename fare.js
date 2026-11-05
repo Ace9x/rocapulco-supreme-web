@@ -2,9 +2,9 @@
 // RATE SCHEDULE: the one place Rocapulco's rates live. 35 RCNY 59B-23(a): never quote or
 // charge more than the Rate Schedule filed with TLC. Server mirror: public.taxi_rate_schedule
 // (supabase/016_tlc_trip_records.sql); tests/tlc.test.mjs fails if the two ever differ.
-// TODO(Fan): confirm these numbers ARE the Rate Schedule on file with TLC for base B00639.
+// TODO(owner): confirm these numbers ARE the Rate Schedule on file with TLC for base B00639.
 //   Until confirmed, RATE_SCHEDULE.filedConfirmed stays false and the rates page says so.
-// Source of current numbers: Fan's Rocapulco spec (Claude chats). No surge, no extra fees.
+// Source of current numbers: the owner's Rocapulco spec (Claude chats). No surge, no extra fees.
 // ======================================================================================
 export const RATE_SCHEDULE = Object.freeze({
   version: 1, effectiveFrom: '2026-10-28', filedConfirmed: false,
@@ -12,7 +12,7 @@ export const RATE_SCHEDULE = Object.freeze({
   suvMultiplier: 1.5, // Black SUV = every Sedan rate x 1.5
   priceMultiplier: false, // no surge / variable pricing, ever
   extraFees: Object.freeze([]), // no booking, service, WAV, airport or cancellation fees
-  tollsNote: 'Tolls are not part of the quote; if your route has a toll it is paid to the driver at actual cost, no markup', // TODO(Fan): confirm the filed schedule passes tolls through at cost
+  tollsNote: 'Tolls are not part of the quote; if your route has a toll it is paid to the driver at actual cost, no markup', // TODO(owner): confirm the filed schedule passes tolls through at cost
 });
 export const RATES = { base: RATE_SCHEDULE.sedan.base, perMile: RATE_SCHEDULE.sedan.perMile, perMinute: RATE_SCHEDULE.sedan.perMinute, minimum: RATE_SCHEDULE.sedan.minimum };
 export const FLAT_RATES = { jfk: RATE_SCHEDULE.sedan.jfk, laguardia: RATE_SCHEDULE.sedan.laguardia };
@@ -23,7 +23,7 @@ export const ratesFor = (vclass = 'sedan') => { const k = CLASS_MULT[vclass] || 
 export const SURGE_CAP = 1; // no surge, ever
 export const DRIVER_SHARE = 0.70;
 export const DISPATCH_PHONE = '(718) 474-7100', DISPATCH_TEL = '+17184747100';
-// TLC for-hire base license number: Fan to provide. Leave '' until then (shows as a blank line).
+// TLC for-hire base license number: owner to provide. Leave '' until then (shows as a blank line).
 export const TLC_BASE = 'B00639';
 export const PAYMENTS = { cash: 'Cash', card: 'Card', zelle: 'Zelle', venmo: 'Venmo' };
 const r2 = r2_;
@@ -68,4 +68,4 @@ export const POPULAR = [
   { k: 'Hospital', label: "St. John's Episcopal Hospital, Far Rockaway", lat: 40.5986, lng: -73.7520 },
   { k: 'Mall', label: 'Green Acres Mall, Valley Stream', lat: 40.6620, lng: -73.7240 },
 ];
-export const ORS_KEY = ''; // Fan: free openrouteservice key (account.heigit.org, Standard plan permits commercial use). Empty = interim Valhalla + estimates.
+export const ORS_KEY = ''; // Owner: free openrouteservice key (account.heigit.org, Standard plan permits commercial use). Empty = interim Valhalla + estimates.

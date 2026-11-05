@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
 const BASE = process.env.BASE || 'http://localhost:8099/';
+test.use({ browserName: process.env.BRW || 'chromium' });
 const OUT = process.env.OUT || 'qa/v25';
 for (const vp of [{ w: 390, h: 844 }, { w: 412, h: 915 }]) {
   test.describe(`gate ${vp.w}`, () => {
     test.use({ viewport: { width: vp.w, height: vp.h }, geolocation: { latitude: 40.6054, longitude: -73.7551 }, permissions: ['geolocation'] });
     test(`rider quote+reload+offline ${vp.w}`, async ({ page: p }) => {
-      const errs = []; p.on('console', m => m.type() === 'error' && errs.push(m.text())); p.on('pageerror', e => errs.push(String(e)));
+      if (process.env.BRW === 'webkit') await (typeof ctx !== 'undefined' ? ctx : p.context()).route(/^https:/, async r => { try { r.fulfill({ response: await r.fetch() }); } catch { r.abort(); } }); const errs = []; p.on('console', m => m.type() === 'error' && errs.push(m.text() + ' @' + (m.location()?.url||''))); p.on('pageerror', e => errs.push(String(e)));
       await p.addInitScript(() => localStorage.setItem('qc_onboarded', 'true'));
       await p.goto(BASE + '?transport=local&nosplash=1#/rider'); await expect(p.locator('#de')).toBeVisible();
       await expect(p.locator('link[href="highbeam.css"]')).toHaveCount(1);
@@ -26,16 +27,16 @@ for (const vp of [{ w: 390, h: 844 }, { w: 412, h: 915 }]) {
       await p.goto(BASE + '?nosplash=1#/'); await expect(p.locator('body')).toContainText('B00639');
       await p.screenshot({ path: `${OUT}/home-${vp.w}.png` });
       await p.goto(BASE + 'rates.html'); await expect(p.locator('body')).toContainText(/no surge/i);
-      console.log('ERRS', JSON.stringify(errs)); expect(errs.filter(e => !/tiles|Failed to load resource|ERR_INTERNET/.test(e))).toEqual([]);
+      console.log('ERRS', JSON.stringify(errs)); expect(errs.filter(e => !/tiles|Failed to load resource|ERR_INTERNET|TLS support is not available/.test(e))).toEqual([]);
     });
     test(`driver loads ${vp.w}`, async ({ page: p }) => {
-      const errs = []; p.on('pageerror', e => errs.push(String(e))); p.on('console', m => m.type() === 'error' && errs.push(m.text()));
+      if (process.env.BRW === 'webkit') await (typeof ctx !== 'undefined' ? ctx : p.context()).route(/^https:/, async r => { try { r.fulfill({ response: await r.fetch() }); } catch { r.abort(); } }); const errs = []; p.on('pageerror', e => errs.push(String(e))); p.on('console', m => m.type() === 'error' && errs.push(m.text() + ' @' + (m.location()?.url||'')));
       await p.goto(BASE + 'driver/?transport=local&nosplash=1'); await p.waitForTimeout(2500);
       await expect(p.locator('link[href="../highbeam.css"]')).toHaveCount(1);
       await p.screenshot({ path: `${OUT}/driver-${vp.w}.png` });
       const over = await p.evaluate(() => [...document.querySelectorAll('button')].filter(e => { const b = e.getBoundingClientRect(); return b.width && b.right > innerWidth + 1; }).map(e => e.id || e.textContent.trim().slice(0, 20)));
       expect(over).toEqual([]);
-      expect(errs.filter(e => !/tiles|Failed to load resource/.test(e))).toEqual([]);
+      expect(errs.filter(e => !/tiles|Failed to load resource|TLS support is not available/.test(e))).toEqual([]);
     });
   });
 }

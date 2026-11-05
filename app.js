@@ -16,7 +16,7 @@ const Q = new URLSearchParams(location.search);
 // deep links: ?to=JFK&car=suv&ref=CODE work in the query or after the hash (#/rider?to=LGA)
 const DL = new URLSearchParams([...Q, ...new URLSearchParams(location.hash.split('?')[1] || '')]);
 const SITE_URL = 'https://ace9x.github.io/rocapulco-supreme-web/';
-const GOOGLE_REVIEW_URL = ''; // Fan: paste the Google Business review link here; the button stays hidden until then
+const GOOGLE_REVIEW_URL = ''; // Owner: paste the Google Business review link here; the button stays hidden until then
 const myRef = () => { let c = localStorage.getItem('qc_myref'); if (!c) { c = 'R' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => '23456789ABCDEFGHJKMNPQRSTUVWXYZ'[b % 31]).join(''); localStorage.setItem('qc_myref', c); } return c; };
 { const r = (DL.get('ref') || '').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 12); if (r && r !== localStorage.getItem('qc_myref') && !localStorage.getItem('qc_ref_in')) localStorage.setItem('qc_ref_in', JSON.stringify({ code: r, at: new Date().toISOString() })); }
 const refLink = (code = myRef()) => SITE_URL + '?ref=' + encodeURIComponent(code);
@@ -126,7 +126,7 @@ async function route(a, b) {
   const r = await route0(a, b); if (r.real) { RC.set(k, { t: Date.now(), r }); if (RC.size > 200) RC.delete(RC.keys().next().value); } return r;
 }
 // Routing providers, in order. OSRM's public demo server is not used (its policy forbids production use).
-// 1) openrouteservice (HeiGIT) — free Standard plan allows commercial use (2,000 routes/day). Needs Fan's free key in fare.js ORS_KEY.
+// 1) openrouteservice (HeiGIT) — free Standard plan allows commercial use (2,000 routes/day). Needs the owner's free key in fare.js ORS_KEY.
 // 2) FOSSGIS Valhalla — interim only: identified with X-Client-Id and throttled to 1 request/second per device.
 // 3) straight-line estimate, clearly labeled approximate.
 async function ors(a, b) {
@@ -977,7 +977,7 @@ function phoneBooking(onBooked) {
     pu = de = q = null; ['#phpu', '#phde', '#phnote'].forEach(x => $(x).value = ''); $('#phq').textContent = ''; };
 }
 // TLC trip records (35 RCNY 59B-19): the server builds B00639_yyyymmdd-yyyymmdd.csv monthly (2nd, 6 AM NY);
-// Fan uploads it on TLC UP (or SFTP) and signs the affirmation there. Due the last day of the following month.
+// The owner uploads it on TLC UP (or SFTP) and signs the affirmation there. Due the last day of the following month.
 async function tlcReportsPanel(box) {
   if (!box) return; const c = await import('./cloud.js'), t = await import('./tlc.js');
   const draw = async (msg = '') => { let xs; try { xs = await c.tlcReports(); } catch (e) { box.innerHTML = `<p class="err">TLC reports: ${esc(e.message)}</p>`; return; }

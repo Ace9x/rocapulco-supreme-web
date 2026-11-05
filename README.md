@@ -1,6 +1,6 @@
 # 🚕 Rocapulco Supreme — web app
 
-The browser/PWA rebuild of [Ace9x/rocapulco-supreme](https://github.com/Ace9x/rocapulco-supreme) (Fan's Expo + Supabase ride-hailing app for Far Rockaway). Same vision — phone sign-up, rider GPS pickup, dispatcher, driver status flow en route → arrived → on trip → completed, cash on completion, $5 + $2.50/mi + $0.40/min with JFK $45 / LGA $55 flat rates — but it runs in any browser with no app store, no Supabase project and no Twilio account.
+The browser/PWA rebuild of [Ace9x/rocapulco-supreme](https://github.com/Ace9x/rocapulco-supreme) (Ace Apps' Expo + Supabase ride-hailing app for Far Rockaway). Same vision — phone sign-up, rider GPS pickup, dispatcher, driver status flow en route → arrived → on trip → completed, cash on completion, $5 + $2.50/mi + $0.40/min with JFK $45 / LGA $55 flat rates — but it runs in any browser with no app store, no Supabase project and no Twilio account.
 
 A phone-first, installable (PWA) taxi app for NYC with **rider**, **driver** and **dispatcher** views — live in your browser, no install or account required.
 

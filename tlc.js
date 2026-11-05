@@ -1,5 +1,5 @@
 // TLC FHV trip-record CSV format (35 RCNY 59B-19; TLC CSV spec, Nov 2018 template). Used by the dispatch
-// "TLC Reports" screen to re-check every server-built file before Fan uploads it on TLC UP / SFTP.
+// "TLC Reports" screen to re-check every server-built file before the owner uploads it on TLC UP / SFTP.
 // Source: https://www.nyc.gov/site/tlc/tlc-online/fhv-trip-record-submission.page
 export const TLC_HEADER = ['dispatching_base_number', 'pickup_date', 'pickup_time', 'TLC_drivers_license_number', 'license_plate', 'affiliated_base_number', 'pickup_location_type', 'pickup_location_name', 'pickup_longitude', 'pickup_latitude', 'dropoff_date', 'dropoff_time', 'dropoff_location_type', 'dropoff_location_name', 'dropoff_longitude', 'dropoff_latitude', 'congestion_zone_flag', 'shared_request_flag', 'shared_match_flag', 'access_a_ride_flag', 'WAV_request_flag', 'request_date', 'request_time', 'originating_base_number', 'on_scene_date', 'on_scene_time'];
 export const tlcFilename = (base, start, end) => `${base}_${start.replaceAll('-', '')}-${end.replaceAll('-', '')}.csv`;
