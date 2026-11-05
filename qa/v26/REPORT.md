@@ -15,3 +15,5 @@ WebKit (real engine, Playwright webkit-2370 on Linux)
 - With that shim: all layout/tap/overlap/tab/reload/offline assertions passed; console-error check FAILED with maplibre blob/createImageBitmap and "access control checks" errors that come from the shim (cross-origin re-served responses). Plain WebKit load of rider + driver on base and new code: 0 errors. Not a clean WebKit 0-error result — honest status: WebKit layout verified, WebKit console not verified.
 Known visual gap: route line on the map is still gold (painted by map.js, JS — out of a CSS-only pass).
 Before/after: qa/v26/before/*.png (rs-v24 code) vs qa/v26/*.png; v25 rider/driver/home before in qa/v25/before/.
+
+## Live gate (rs-v26 confirmed in live sw.js, 10:37 PM ET): 7/7 pass, Chromium, 0 console errors. Shots in qa/v26/live/.
