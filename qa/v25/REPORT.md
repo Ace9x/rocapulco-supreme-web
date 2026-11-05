@@ -15,3 +15,6 @@ Regression: full Playwright suite — same 7 failures exist on the unchanged rs-
     tests/v7shots.spec.mjs:5:3 › v7 screens d 
 Not covered: no booking submitted (quote step only, local transport, no rows created); real Safari engine not tested; dispatch/owner screens not restyled.
 Screenshots: rider-quote/offline/home/driver at 390 and 412.
+
+## Live gate (https://ace9x.github.io/rocapulco-supreme-web/, live sw.js = rs-v25, highbeam.css 200)
+Run 1: 3/4 pass — one rider quote timed out waiting for the fare/element (live routing call). Run 2: 4/4 pass, 0 console errors. Screenshots in qa/v25/live/.
