@@ -10,3 +10,5 @@ Local gate, Chromium
 - Full Playwright suite: 14 failures, the SAME 14 on unchanged rs-v26 code in the same run window (network/Supabase-dependent e2e, growth, routing, v7 shots, accounts, apply, security, sandbox). No new failures.
 - Pre-existing issue found, not fixed (it's logic, not visual): sandbox.spec shows sandbox mode still calls the server (rpc expiring_docs, tlc_reports, ride_event, rider_contact). Same on rs-v26.
 Screenshots: qa/v27/before/ (rs-v26) vs qa/v27/; the rider-route-map-*.png clips show the route. Full-page headless shots render the map blank (a screenshot artifact; clipped shots of the same page show the map), so use the -map- clips.
+
+## Live (rs-v27 confirmed in live sw.js; live map.js has #06C167): Highbeam gates 7/7 pass, 0 console errors, 12:03 AM ET. A first live attempt at ~11:55 PM failed 7/7 because the push had not gone through (a rebase was blocked by gate-overwritten qa/v25 shots) and the old build was still live; fixed and re-run. Shots: qa/v27/live/.
